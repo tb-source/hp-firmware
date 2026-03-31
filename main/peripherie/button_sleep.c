@@ -17,17 +17,17 @@ static volatile wakeup_t s_eWakeupState = WAKEUP_IDLE;
 void button_sleep_init(void)
 {
 	deepSleep_wakeupCause();
-
+	ESP_LOGI("button_sleep_init", "start");
 	//init pins
 	gpio_config_t io_conf;
 	io_conf.intr_type = GPIO_INTR_DISABLE;                                                    //disable interrupt
 	io_conf.mode = GPIO_MODE_INPUT;                                                          	//set as input mode
-	io_conf.pin_bit_mask = ((1U << PIN_BUTTON));     											//bit mask of the pins
+	io_conf.pin_bit_mask = ((1ULL << PIN_BUTTON));     											//bit mask of the pins
 	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;                                           	//disable pull-down mode
 	io_conf.pull_up_en = GPIO_PULLUP_DISABLE ;                                                //disable pull-up mode
-	gpio_config(&io_conf);
-//	  gpio_get_level(PIN_BUTTON);
-	xTaskCreate(button_state, "button_event_task", 1024, NULL, 5, NULL);    										//1024 Create a task to handler TOUCH event from ISR
+	ESP_ERROR_CHECK(gpio_config(&io_conf));
+	xTaskCreate(button_state, "button_event_task", 1024, NULL, 3, NULL);    										//1024 Create a task to handler TOUCH event from ISR
+	ESP_LOGI("button_sleep_init", "end");
 }
 
 //get state of button
@@ -69,11 +69,9 @@ void button_state(void)
 				//press time < 5s - device startup
 				if (s_i32TouchTimeCount < 16)		
 				{
-					led_set(2,LED_ON);
-					vTaskDelay(5000 / portTICK_PERIOD_MS);
-					led_set(2,LED_OFF);
                     if((s_eButtonState == BTN_IDLE) || (s_eButtonState == BTN_WAKEUP))
                     {
+						ESP_LOGI("BTN_TASK", "Short press detected: %d", (int)s_i32TouchTimeCount);
                         s_eButtonState = BTN_PRESSED_SHORT;
 						s_eWakeupState = WAKEUP_BTN_PRESSED_SHORT;
                     }
@@ -82,11 +80,9 @@ void button_state(void)
 				//press time > 5s - device setup mode
 				else							
 				{	
-					led_set(2,LED_ON);
-					vTaskDelay(5000 / portTICK_PERIOD_MS);
-					led_set(2,LED_OFF);
                     if((s_eButtonState == BTN_IDLE) || (s_eButtonState == BTN_WAKEUP))
                     {
+						ESP_LOGI("BTN_TASK", "Mid press detected: %d", (int)s_i32TouchTimeCount);
                         s_eButtonState = BTN_PRESSED_MID;
 						s_eWakeupState = WAKEUP_BTN_PRESSED_MID;
                     }
@@ -96,12 +92,9 @@ void button_state(void)
 			{
 				if (s_eButtonState == BTN_WAKEUP)	//very short press 
 				{
+					ESP_LOGI("BTN_TASK", "Very short press detected: %d", (int)s_i32TouchTimeCount);
 					s_eButtonState = BTN_PRESSED_SHORT;
 					s_eWakeupState = WAKEUP_BTN_PRESSED_SHORT;
-
-					led_set(2,LED_ON);
-					vTaskDelay(2000 / portTICK_PERIOD_MS);
-					led_set(2,LED_OFF);
 				}
 			}
 //
@@ -113,8 +106,12 @@ void button_state(void)
 
 void deepSleep_activate(uint64_t sleepTimeus)
 {
+	ESP_LOGI("DEEPSLEEP", "Entering deep sleep for %llu us", sleepTimeus);
+	s_eButtonState = BTN_IDLE;
+	s_eWakeupState = WAKEUP_IDLE;
+
 	//deinit touch pad to save power
-	touch_deinit1();
+	// touch_deinit1();
 
 	//set wakeup time to next watering sequence
 	esp_sleep_enable_timer_wakeup(sleepTimeus);		//in �s - 100s
@@ -147,6 +144,7 @@ void deepSleep_wakeupCause(void)
 			// if (gpio_get_level(PIN_BUTTON) == 0)
 			// {
 				s_eButtonState = BTN_WAKEUP;
+				s_eWakeupState = WAKEUP_BTN_PRESSED_ACT;
 				// led_switch(2, 1);
 			// }
 			break;

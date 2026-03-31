@@ -34,6 +34,7 @@ deviceData_t eDeviceData_get(void){
 
 void button_task(void)
 {
+    //uncomment for normal operaption - only for demo purposes
     led_set(1,LED_ON);
     char *data = (char*) malloc(4000*sizeof(char));
     ESP_LOGI("BTN_START", "Read dev storage data: %s", esp_err_to_name(device_read(data)));
@@ -48,8 +49,11 @@ void button_task(void)
     free(data);
     //sync esp rtc with external rtc
     RTCExt_getUnixTime();        //uncommented
+  
+    // bt_prov(&deviceData); 
 
     while(1){
+    ESP_LOGI("BUTTON_TASK", "Wakeup state: %d", (int)eWakeup_state());
     switch(eWakeup_state())
 	{
 	case WAKEUP_BTN_PRESSED_SHORT:
@@ -68,10 +72,20 @@ void button_task(void)
             // led_switch(1, 0);
             //RTCExt_setTime();
 
-            deviceData_t deviceDataOld = deviceData;
+            deviceData_t deviceDataOld = deviceData;     
             deviceData.battery = ui32BattVolt_read();
             deviceData.temperature = (uint32_t)fTemp_read()*10;
-            bt_prov(&deviceData);
+
+            ESP_LOGI("BTN_SHORT", "Start BT Provisioning");
+            bt_prov(&deviceData); 
+
+            //demo mode
+            // selector_setPos(1);
+            // vTaskDelay(500 / portTICK_PERIOD_MS);
+            // pump_runTime(3000, MOTOR_DIR_UP);    
+            // vTaskDelay(500 / portTICK_PERIOD_MS);
+            // selector_setPos(0);
+
             // led_switch(1, 0);
             //set unix time
             RTCExt_setUnixTime();
@@ -122,6 +136,14 @@ void button_task(void)
             led_set(1,LED_OFF);
             //go sleeping
             deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - 100s  
+        }
+        break;
+
+    case WAKEUP_BTN_PRESSED_ACT:
+        {
+            vTaskDelay(500 / portTICK_PERIOD_MS);
+            //device reset
+            // esp_restart();
         }
         break;
 
@@ -430,9 +452,12 @@ esp_err_t erWatering(wateringData_t* wateringData)
     //log the periphery data
     log_peripherieData();
 
-    const bool bAvoidWaterlogging = false;       //enable to avoid watering if water is in pot
+    const bool bAvoidWaterlogging = true;       //enable to avoid watering if water is in pot
     bool bOverstepEvent = false;                //overstep watering event in case of water in pot
     esp_err_t error = ESP_OK;                   
+
+    
+    return error;       //delete after test
 
     //init powerstage
     bPowerstage_init();
@@ -463,9 +488,9 @@ esp_err_t erWatering(wateringData_t* wateringData)
                             esp_err_sel_t selError = ERR_SEL_OK;
                             if (bAvoidWaterlogging)
                             {
-                                if (bHumidity_check(i32ChanelCount)) //check for no water in pot
+                                if (!bHumidity_check(i32ChanelCount + 1)) //check for no water in pot
                                 {
-                                    selError = selector_setPos(i32ChanelCount + 1 ,  SELECTOR_1);
+                                    selError = selector_setPos(i32ChanelCount + 1);
                                 }
                                 else{
                                     bOverstepEvent = true;
@@ -474,7 +499,7 @@ esp_err_t erWatering(wateringData_t* wateringData)
                             }
                             else
                             {
-                                selError = selector_setPos(i32ChanelCount + 1 ,  SELECTOR_1);
+                                selError = selector_setPos(i32ChanelCount + 1);
                             }
                             
                             if(selError == ERR_SEL_OK)
@@ -484,20 +509,23 @@ esp_err_t erWatering(wateringData_t* wateringData)
                                 {
 
                                     //calc watering time quantity [ml/20] * pumpTimeFact
-                                    const uint32_t ui32PumpTimeFact = (uint32_t)(0.25*1000);      //[ms/ml]
-                                    const uint32_t ui32PumpPulseDuration = 5 * ui32PumpTimeFact;     //10[ml] * ui32PumpTimeFact[ms/ml]-> [ms] - pulse duration of watering cycles
+                                    const uint32_t ui32PumpTimeFact = (uint32_t)(0.4*1000);      //[ms/ml]
+                                    const uint32_t ui32PumpPulseDuration = 5 * ui32PumpTimeFact + 500;     //5[ml] * ui32PumpTimeFact[ms/ml] + watering dead time (500ms)-> [ms] - pulse duration of watering cycles
                                     uint32_t ui32WaterTime = (*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringAmount * 20 * ui32PumpTimeFact;   //[ms]
 
                                     uint32_t ui32WateringDuration = 0;
                                     for (uint32_t i = 0; i < (ui32WaterTime/ui32PumpPulseDuration); i++)
                                     {
                                         //check for no water in pot
-                                        if(bHumidity_check(i32ChanelCount) || !bAvoidWaterlogging)
+                                        if(!bHumidity_check(i32ChanelCount + 1) || !bAvoidWaterlogging)
                                         {
                                             pump_runTime(ui32WaterTime/(ui32WaterTime/ui32PumpPulseDuration), MOTOR_DIR_UP);    
                                             ESP_LOGI("erWatering: ","No water in pot");
                                             ui32WateringDuration += ui32PumpPulseDuration;
-                                            vTaskDelay(10000);
+                                            // vTaskDelay(10000);
+                                            esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);    //wait 30s
+                                            esp_light_sleep_start();
+
                                         }
                                         else
                                         {
@@ -508,7 +536,7 @@ esp_err_t erWatering(wateringData_t* wateringData)
                                     ESP_LOGI("erWatering: "," ui32WaterTime: %ld", ui32WateringDuration); 
                                     
                                     //log watering data
-                                    log_wateringData(i32ChanelCount + 1, i32EventCount + 1, ui32WateringDuration/ui32PumpTimeFact);
+                                    log_wateringData(i32ChanelCount + 1, i32EventCount + 1, ui32WateringDuration/ui32PumpTimeFact, ui32AdcTouch_readPwmMux(i32ChanelCount + 9, 100));
 
                                     //watering succeed? set last watering data
                                     (*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringLastUnix = (*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringNextUnix;                                  //set last watering data
@@ -516,6 +544,7 @@ esp_err_t erWatering(wateringData_t* wateringData)
                                 }
                                 else
                                 {
+                                    log_wateringData(i32ChanelCount + 1, i32EventCount + 1, 0, ui32AdcTouch_readPwmMux(i32ChanelCount + 9, 100));
                                     //if water in pot -> time delay for next watering 1d
                                     tNextWatering = (*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringNextUnix + (24 * 60 * 60);      
                                 }
@@ -561,7 +590,7 @@ esp_err_t erWatering(wateringData_t* wateringData)
         // }
 
         //get selector position and set selector position to interstep
-        selector_setPos(0, SELECTOR_1);
+        selector_setPos(0);
         ESP_LOGI("erWatering: ","Watering event(s) processed");
         vTaskDelay(200);
     }

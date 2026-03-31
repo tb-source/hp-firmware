@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_spiffs.h"
 #include "periphery.h"
+#include "ble_miflora.h"
 
 typedef enum{
     LOG_TYPE_PERIPHERY,				    
@@ -34,7 +35,7 @@ typedef enum{
 extern void log_readData(log_type_t eType);
 extern void log_clearData(log_type_t eType);
 extern void log_peripherieData(void);
-extern void log_wateringData(uint32_t wateringChannel, uint32_t wateringEvent, uint32_t wateringAmount);
+extern void log_wateringData(uint32_t ui32WateringChannel, uint32_t ui32WateringEvent, uint32_t ui32WateringAmount, uint32_t ui32humidity);
 extern void log_errorData(log_error_type_t eErrorType, char* pacErrorMessage);
 
 #endif /* MAIN_LOG_H_ */

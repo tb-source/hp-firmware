@@ -10,6 +10,7 @@
 
 #include "../periphery.h"
 #include "esp_sleep.h"
+#include <esp_log.h>
 
 typedef enum{
 	BTN_IDLE,
@@ -21,6 +22,7 @@ typedef enum{
 
 typedef enum{
     WAKEUP_IDLE,
+    WAKEUP_BTN_PRESSED_ACT,
 	WAKEUP_BTN_PRESSED_SHORT,
     WAKEUP_BTN_PRESSED_MID,
     WAKEUP_BTN_PRESSED_LONG,

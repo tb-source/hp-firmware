@@ -15,11 +15,19 @@ static const char *sc_acFilePaths[] = {
     "/spiffs/log_error.csv",
 };
 
+#ifdef MIFLORA_ENABLE
 static const char *sc_acHeadline[] = {
-    "time, message, logicVoltage, battVoltage, solarVoltage, temperature, humidity 0, humidity 1, humidity 2, waterLevel, ChargeStatus",
-    "time, wateringChannel, wateringEvent, wateringAmount",
+    "time, message, logicVoltage, battVoltage, solVoltage, temperature, humidity 0, humidity 1, humidity 2, waterLevel, waterEmpty, chargeStatus, mifloraTemperature1, mifloraIlluminance1, mifloraMoisture1, mifloraConductivity1, mifloraTemperature2, mifloraIlluminance2, mifloraMoisture2, mifloraConductivity2, mifloraTemperature3, mifloraIlluminance3, mifloraMoisture3, mifloraConductivity3", 
+    "time, wateringChannel, wateringEvent, wateringAmount, humidity",
     "time, errorTag, errorMessage",
 };
+#else
+static const char *sc_acHeadline[] = {
+    "time, message, logicVoltage, battVoltage, solVoltage, temperature, humidity 0, humidity 1, humidity 2, waterLevel, waterEmpty, chargeStatus", 
+    "time, wateringChannel, wateringEvent, wateringAmount, humidity",
+    "time, errorTag, errorMessage",
+};
+#endif
 
 static const char *sc_acMessageTypes[] = {
     "P",
@@ -96,7 +104,7 @@ void log_saveData(char acData[], log_type_t eType)
         return;
     }
 
-    fprintf(f, "%s\n", acData);
+    fprintf(f, "%s", acData);
 
     fclose(f);
     ESP_LOGI(TAG, "File written");
@@ -235,11 +243,12 @@ void log_readData(log_type_t eType)
         return;
     }
 
-    char line[128];
+    char line[256];
     ESP_LOGI(TAG, "Read line: $%s-START$", sc_acMessageTypes[eType]);
     while (fgets(line, sizeof(line), f) != NULL) 
     {
-        // Process each line
+       // Process each line        
+        line[strlen(line) - 1] = '\0';
         ESP_LOGI(TAG, "Read line: $%s$", line);
     }
     ESP_LOGI(TAG, "Read line: $%s-END$", sc_acMessageTypes[eType]);
@@ -251,7 +260,11 @@ void log_readData(log_type_t eType)
 }
 
 //pack peripherie data for logging
+#ifdef MIFLORA_ENABLE
 void log_peripherieData(void)
+#else
+void log_peripherieData(void)
+#endif
 {
     // char data[64];
     // char acdataString[64];
@@ -304,8 +317,8 @@ void log_peripherieData(void)
     // sprintf(acdataString, "%s", data);
     // ESP_LOGI(TAG, "Packed data: %s", acdataString);
 
-    char acData[128] = {0};;
-    char acAppendData[32] = {0};
+    char acData[512] = {NULL};
+    char acAppendData[32] = {NULL};
 
     // //first entry -> time
     sprintf(acAppendData, "%lld,", (long long)time(NULL));
@@ -333,16 +346,50 @@ void log_peripherieData(void)
     strcat(acData, acAppendData);
 
     //sixth entry -> humidity sensing
-    sprintf(acAppendData, "%d,%d,%d,", (int)ui32Humidity_count(0), (int)ui32Humidity_count(1), (int)ui32Humidity_count(2));
+    sprintf(acAppendData, "%d,%d,%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM1,100), (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM2,100), (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM3,100));
+    // sprintf(acAppendData, "%d,%d,%d,", (int)FDC_getCap(1)/5243, (int)FDC_getCap(2)/5243, (int)FDC_getCap(3)/5243);
     strcat(acData, acAppendData);
 
     //seventh entry -> water level
-    sprintf(acAppendData, "%d,", (int)ui32Level_read());
+    sprintf(acAppendData, "%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL,100));
     strcat(acData, acAppendData);
 
-    // eighth entry -> charge status
-    sprintf(acAppendData, "%d\n", (int)ui32Charge_read());
+    //eighth entry -> water empty
+    sprintf(acAppendData, "%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_TANKETY,100));
     strcat(acData, acAppendData);
+
+    // ninth entry -> charge status
+    sprintf(acAppendData, "%d,", (int)ui32Charge_read());
+    strcat(acData, acAppendData);
+
+    #ifdef MIFLORA_ENABLE
+
+    miflora_data_t pFloraData;
+    ble_miflora_init();
+    for (int i=0; i<3; i++)
+    {
+        ble_miflora_read(i, &pFloraData);
+
+        sprintf(acAppendData, "%.1f,", pFloraData.temperature);
+        strcat(acData, acAppendData);
+
+        sprintf(acAppendData, "%d,", (int)pFloraData.illuminance);
+        strcat(acData, acAppendData);
+
+        sprintf(acAppendData, "%d,", (int)pFloraData.moisture);
+        strcat(acData, acAppendData);
+
+        if (i<2){
+            sprintf(acAppendData, "%d,", (int)pFloraData.conductivity);
+        }
+        else{
+             sprintf(acAppendData, "%d\n", (int)pFloraData.conductivity);
+        }
+        strcat(acData, acAppendData);
+    }
+    ble_miflora_deinit();
+
+    #endif
 
     // Pack data for logging
     ESP_LOGI(TAG, "Pack periphery data: %s", acData);
@@ -352,7 +399,7 @@ void log_peripherieData(void)
 }
 
 //pack watering data for logging
-void log_wateringData(uint32_t wateringChannel, uint32_t wateringEvent, uint32_t wateringAmount)
+void log_wateringData(uint32_t ui32WateringChannel, uint32_t ui32WateringEvent, uint32_t ui32WateringAmount, uint32_t ui32humidity)
 {
     char acData[128] = {0};
     char acAppendData[32] = {0};
@@ -360,13 +407,16 @@ void log_wateringData(uint32_t wateringChannel, uint32_t wateringEvent, uint32_t
     sprintf(acAppendData, "%lld,", (long long)time(NULL));
     strcat(acData, acAppendData);
 
-    sprintf(acAppendData, "%d,", (int)wateringChannel);
+    sprintf(acAppendData, "%d,", (int)ui32WateringChannel);
     strcat(acData, acAppendData);
 
-    sprintf(acAppendData, "%d,", (int)wateringEvent);
+    sprintf(acAppendData, "%d,", (int)ui32WateringEvent);
     strcat(acData, acAppendData);
 
-    sprintf(acAppendData, "%d,", (int)wateringAmount);
+    sprintf(acAppendData, "%d,", (int)ui32WateringAmount);
+    strcat(acData, acAppendData);
+
+    sprintf(acAppendData, "%d\n", (int)ui32humidity);
     strcat(acData, acAppendData);
 
      // Save packed data to file
@@ -386,7 +436,7 @@ void log_errorData(log_error_type_t eErrorType, char* pacErrorMessage)
     sprintf(acAppendData, "%s,", sc_acErrorTypes[eErrorType]);
     strcat(acData, acAppendData);
 
-    sprintf(acAppendData, "%s", pacErrorMessage);
+    sprintf(acAppendData, "%s\n", pacErrorMessage);
     strcat(acData, acAppendData);
 
     // Save packed data to file

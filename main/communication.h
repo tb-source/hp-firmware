@@ -20,6 +20,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "log.h"
+#include "ble_miflora.h"
 
 extern void uart_init(void);
 

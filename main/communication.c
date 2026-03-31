@@ -137,6 +137,12 @@ void testFunction(uint8_t* pacData)
 		}
 		break;
 
+		case 'p':
+		{
+	        log_peripherieData();
+		}
+		break;
+
 		case 'u':
 		{
 	        ESP_LOGI(TAGA, "DATA: %i", (int)ui32BattVolt_read());
@@ -154,7 +160,7 @@ void testFunction(uint8_t* pacData)
 			// ESP_ERROR_CHECK(gpio_set_level(PIN_SEL1_EN, 1));        		//enable driver
 			// vTaskDelay(100);		//wait for capacitors loaded
 			// TLV_init();				//init TLV sensor
-			selector_setPos((*(pacData + 1)), SELECTOR_1);
+			selector_setAngle((*(pacData + 1))*2, false);
 			// ESP_ERROR_CHECK(gpio_set_level(PIN_SEL1_EN, 0));        		//enable driver
 			// TLV_deinit();
 		}
@@ -165,12 +171,18 @@ void testFunction(uint8_t* pacData)
 			// ESP_ERROR_CHECK(gpio_set_level(PIN_SEL2_EN, 1));        		//enable driver
 			// vTaskDelay(100);		//wait for capacitors loaded
 			// TLV_init();				//init TLV sensor
-			selector_setPos((*(pacData + 1)), SELECTOR_2);
+			selector_setPos((*(pacData + 1)));
 			// ESP_ERROR_CHECK(gpio_set_level(PIN_SEL2_EN, 0));        		//enable driver
 			// TLV_deinit();
 		}
 		break;
 	
+
+		case 'c':
+		{
+			selector_caliPos();
+		}
+		break;
 
 		case 't':
 		{
@@ -180,7 +192,8 @@ void testFunction(uint8_t* pacData)
 
 		case 'w':
 		{
-			uint32_t ui32Position = (uint32_t)(*(pacData + 1));
+			ESP_LOGI(TAGA, "DATA: %ld", ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL, 100));
+			// uint32_t ui32Position = (uint32_t)(*(pacData + 1));
 //	        ESP_LOGI(TAGA, "DATA: %d", ui32Position_read());
 			// selector_set(ui32Position);
 		}
@@ -188,32 +201,32 @@ void testFunction(uint8_t* pacData)
 
 		case 'y':
 		{
-			selector_caliPos(SELECTOR_2);
+			ESP_LOGI(TAGA, "DATA: %ld", ui32AdcTouch_readPwmMux((adc_mux_t)(*(pacData + 1)), 500));
 		}
 		break;
 
 		case 'z':
 		{
-//			RTC_updateTime();
+			deepSleep_activate(1000*10000000);		//1000s
 		}
 		break;
 
 		case 'h':
 		{
-			ESP_LOGI("Humidity", "Frequency: %d", (int)ui32Humidity_count((uint32_t)(*(pacData + 1))));
+			ESP_LOGI("Humidity", "Capacitance: %f", (float)FDC_getCap((uint32_t)(*(pacData + 1))) / 524288.0);
 		}
 		break;
 
 		case 'f':
 		{
-			// bPowerstage_init();
-			// esp_err_t err;
-			// uint32_t iRunTime = (uint32_t)(*(pacData + 1))*100;
-			// //uint32_t iBackEMF = (uint32_t)(*(pacData + 2))*100;
-			// err = pump_runTime(iRunTime, MOTOR_DIR_UP);
-			// ESP_LOGI(TAG, "DATA: %s", esp_err_to_name(err));
-			// ESP_LOGI(TAG, "DATA: %i", (int)ui32ReadVariable());
+			ESP_LOGI("LEVEL", "ui32Level_readMl: %d", (int)ui32Level_readMl());
 
+		}
+		break;
+
+		case 'g':
+		{
+			ESP_LOGI("LEVEL", "ui32Level_readPerc: %d", (int)ui32Level_readPerc());
 		}
 		break;
 
@@ -261,7 +274,7 @@ void testFunction(uint8_t* pacData)
 		case 'a':
 		{
 			esp_err_t  eEspError = ESP_OK;
-			eEspError = adc_calibration_150mV();
+			// eEspError = adc_calibration_150mV();
 	        ESP_LOGI(TAGS, "DATA: %s", esp_err_to_name(eEspError));
 		}
 		break;
@@ -269,7 +282,7 @@ void testFunction(uint8_t* pacData)
 		case 'b':
 		{
 			esp_err_t eEspError = ESP_OK;
-			eEspError = adc_calibration_850mV();
+			// eEspError = adc_calibration_850mV();
 	        ESP_LOGI(TAGS, "DATA: %s", esp_err_to_name(eEspError));
 		}
 		break;
@@ -279,6 +292,17 @@ void testFunction(uint8_t* pacData)
 			for(uint32_t ui32Count=0; ui32Count < 511; ui32Count++){
 				ESP_LOGI(TAGA, "DATA: %i", (int)g_ai32Analyser[ui32Count]);
 			}
+		}
+		break;
+
+		case 'm':
+		{
+			miflora_data_t pFloraData;
+			ble_miflora_init();
+			ble_miflora_read(0, &pFloraData);
+			ble_miflora_read(1, &pFloraData);
+			ble_miflora_read(2, &pFloraData);
+			ble_miflora_deinit();
 		}
 		break;
 	}

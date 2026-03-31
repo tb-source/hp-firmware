@@ -9,11 +9,9 @@
 #include "rom/ets_sys.h"		//for us delay function - delete further
 
 
-static adc_calibration_t s_sAdcCalibration = {0, 0, 5440, 15363};												//{12Q0, 12Q0, 14Q6, 15Q16}
-
-static const uint32_t s_cui32LogicVoltageFact = (uint32_t)((100.0+33.0)/33.0 * 4096);          					//voltage divider (Rpu(100kR)+Rpd(33kR))/Rpd(33kR)) (15Q12)
-static const uint32_t s_cui32BattVoltageFact = (uint32_t)((33.0+10.0)/10.0 * 4096);          					//voltage divider (Rpu(33kR)+Rpd(10kR))/Rpd(10kR)) (15Q12)
-static const uint32_t s_cui32SolarVoltageFact = (uint32_t)((200.0+33.0)/33.0 * 4096);          					//voltage divider (Rpu(200kR)+Rpd(33kR))/Rpd(33kR)) (15Q12)
+static const uint32_t s_cui32LogicVoltageFact = (uint32_t)((100.0+33.0)/33.0 * 4096);          					//voltage divider (Rpu(100kR)+Rpd(33kR))/Rpd(33kR)) (16Q12)
+static const uint32_t s_cui32BattVoltageFact = (uint32_t)((33.0+10.0)/10.0 * 4096);          					//voltage divider (Rpu(33kR)+Rpd(10kR))/Rpd(10kR)) (16Q12)
+static const uint32_t s_cui32SolarVoltageFact = (uint32_t)((200.0+33.0)/33.0 * 4096);          					//voltage divider (Rpu(200kR)+Rpd(33kR))/Rpd(33kR)) (16Q12)
 
 
 static uint32_t s_ui32SupplyVoltage = 0;																		//logic supply voltage 14Q0 [mV]
@@ -22,8 +20,6 @@ static uint32_t s_ui32BattVoltage = 0;																			//battery supply voltag
 const float g_cafNTCTempValues[] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60};
 const float g_cafNTCFactValues[] = {0.0264, 0.0346, 0.0449, 0.0575, 0.0727, 0.0909, 0.1123, 0.1371, 0.1652, 0.1968, 0.2315, 0.2691, 0.3090};
 
-//selector variables
-static volatile uint32_t s_ui32SelPos = 20;		//position 1 1-2 2 2-3
 
 static uint32_t s_ui32LevelMin = 0;
 static uint32_t s_ui32LevelMax = 0;
@@ -77,23 +73,6 @@ void led_init(void)
   xTaskCreate(led_task, "led_task", 1024, NULL, 2, NULL);
 }
 
-//switch led  $input: uiLEDNumber - number of LED (1...4), uiLevel - state of led $output: instruction successful
-// bool led_switch(uint32_t uiLEDNumber, uint32_t uiLevel)
-// {
-// 	if ((uiLEDNumber > 0) && (uiLEDNumber < 3))
-// 	{
-// 		if (uiLevel < 2)
-// 		{
-// 			gpio_set_level(PIN_LEDS[uiLEDNumber - 1], uiLevel);
-// 			return true;
-// 		}
-// 	}
-// 	else{
-
-// 	}
-
-// 	return false;
-// }
 
 //switch led  $input: uiLEDNumber - number of LED (1...4), uiLevel - state of led
 void led_set(uint32_t ui32LEDNumber, led_status_t eLedStatus)
@@ -120,137 +99,109 @@ void led_set(uint32_t ui32LEDNumber, led_status_t eLedStatus)
 	}
 }
 
+
 //task for LED control
 static void led_task()
 {
-	const uint32_t aui32BlinkOnTime[] = {1000, 500};		//blink delay in ms	
-	const uint32_t aui32BlinkOffTime[] = {1000, 500};		//blink delay in ms	
-	const uint32_t ui32LEDNumber = 0;
+	const int32_t ai32BlinkOnTime[] =  {2, 1};		//blink on time in ms	
+	const int32_t ai32BlinkOffTime[] = {-2, -1};		//blink off time in ms	
+	int32_t ai32LEDCounter[2] = {-1, -1};
 
 	while(1)
 	{
-		switch(s_aeLedState[ui32LEDNumber])
+		//500ms delay for task switching
+		for (uint32_t ui32LEDNumber = 0; ui32LEDNumber < 2; ui32LEDNumber++)
 		{
-			case LED_OFF:
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
-			break;
-			case LED_ON:
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
-			break;
-			case LED_BLINK_SLOW:
-			gpio_set_level(PIN_LEDS[ui32LEDNumber], 1);
-			vTaskDelay(aui32BlinkOnTime[ui32LEDNumber] / portTICK_PERIOD_MS);
-			gpio_set_level(PIN_LEDS[ui32LEDNumber], 0);
-			vTaskDelay(aui32BlinkOffTime[ui32LEDNumber] / portTICK_PERIOD_MS);
-			break;
-			case LED_BLINK_FAST:
-			gpio_set_level(PIN_LEDS[ui32LEDNumber], 1);
-			vTaskDelay(aui32BlinkOnTime[ui32LEDNumber] / portTICK_PERIOD_MS);
-			gpio_set_level(PIN_LEDS[ui32LEDNumber], 0);
-			vTaskDelay(aui32BlinkOffTime[ui32LEDNumber] / portTICK_PERIOD_MS);
-			break;
+			if (s_aeLedState[ui32LEDNumber] == LED_BLINK_SLOW || s_aeLedState[ui32LEDNumber] == LED_BLINK_FAST)
+			{
+				//LED on
+				if(ai32LEDCounter[ui32LEDNumber] > 0)
+				{
+					if(ai32LEDCounter[ui32LEDNumber] >= ai32BlinkOnTime[s_aeLedState[ui32LEDNumber] - 2])
+					{
+						gpio_set_level(PIN_LEDS[ui32LEDNumber], 0);			//switch off
+						ai32LEDCounter[ui32LEDNumber] = -1;
+					}
+					else
+					{
+						ai32LEDCounter[ui32LEDNumber]++;
+					}
+				}
+				//LED off
+				else
+				{
+					if(ai32LEDCounter[ui32LEDNumber] <= ai32BlinkOffTime[s_aeLedState[ui32LEDNumber] - 2])
+					{
+						gpio_set_level(PIN_LEDS[ui32LEDNumber], 1);			//switch on
+						ai32LEDCounter[ui32LEDNumber] = 1;
+					}
+					else
+					{
+						ai32LEDCounter[ui32LEDNumber]--;
+					}
+				}
+			}
 		}
+		vTaskDelay(500 / portTICK_PERIOD_MS);
 	}
 }
 
-
-
-
-//initialise humidity sensor
-static pcnt_unit_handle_t s_pcnt_unit[2] = {NULL, NULL};
-void humidity_init(void)
-{
-	pcnt_unit_config_t unit_config = {
-		.high_limit = 10000,      
-		.low_limit = -10000,
-	};
-
-	ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &s_pcnt_unit[0]));
-	ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &s_pcnt_unit[1]));
-
-	pcnt_chan_config_t chan_config = {
-		.edge_gpio_num = PIN_HUM_1,
-		.level_gpio_num = -1, // Not used
-	};
-	pcnt_channel_handle_t pcnt_chan = NULL;
-	ESP_ERROR_CHECK(pcnt_new_channel(s_pcnt_unit[0], &chan_config, &pcnt_chan));
-	ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_HOLD));
-
-	chan_config.edge_gpio_num = PIN_HUM_2; // Use the second GPIO for the second channel
-	ESP_ERROR_CHECK(pcnt_new_channel(s_pcnt_unit[1], &chan_config, &pcnt_chan));
-	ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_HOLD));
-
-	ESP_ERROR_CHECK(pcnt_unit_enable(s_pcnt_unit[0]));
-	ESP_ERROR_CHECK(pcnt_unit_enable(s_pcnt_unit[1]));
-}
-
-//count humidity pulses $return: uint32_t - frequency of pulses [Hz]
-uint32_t ui32Humidity_count(uint32_t ui32Channel)
-{
-	if (ui32Channel > 1) {
-		return 0;
-	}
-
-	if (s_pcnt_unit[ui32Channel] == NULL) {
-		ESP_LOGE("Humidity", "PCNT unit not initialized for channel %d", (int)ui32Channel);
-		return 0;
-	}
-
-	// Clear the count and start the unit
-	ESP_ERROR_CHECK(pcnt_unit_clear_count(s_pcnt_unit[ui32Channel]));
-	ESP_ERROR_CHECK(pcnt_unit_start(s_pcnt_unit[ui32Channel]));
-	int64_t i64StartTime = esp_timer_get_time(); 
-
-	vTaskDelay(100 / portTICK_PERIOD_MS); // wait 100ms
-
-	ESP_ERROR_CHECK(pcnt_unit_stop(s_pcnt_unit[ui32Channel]));
-	int64_t i64EndTime = esp_timer_get_time();
-	int32_t i32Duration = (int32_t)(i64EndTime - i64StartTime);		//[us]
-
-	int iPulseCount = 0;
-	ESP_ERROR_CHECK(pcnt_unit_get_count(s_pcnt_unit[ui32Channel], &iPulseCount));
-
-	int32_t i32Frequency = (int32_t)iPulseCount * 1000000 / i32Duration; // Calculate frequency in Hz
-	// ESP_LOGI("Humidity", "Frequency %d: %d", (int)ui32Channel, (int)i32Frequency);
-	return (uint32_t)i32Frequency; // Convert to Hz
-}
-
-//check humidity state $return: bool , true->water in pot, false -> no water in pot
+//check humidity state $return: bool , true->water in pot, false -> no water in pot $ui32Channel - channel number (1...3)
 bool bHumidity_check(uint32_t ui32Channel)
 {
-	const uint32_t ui32FrequencyLimit = 10500;
+	const uint32_t ui32FrequencyLimit = 5000;		//limit for deivce 1
+	// const uint32_t ui32FrequencyLimit = 2950;		//limit for deivce 2
 
-	if (ui32Channel > 1) {
+	if ((ui32Channel > 3) || (ui32Channel < 1)) {
+		ESP_LOGE("bHumidity_check", "Channel out of range");
 		return false;
 	}
 
-	if (ui32Humidity_count(ui32Channel) > ui32FrequencyLimit)		//no/less water in pot 
+	if (ui32AdcTouch_readPwmMux(ui32Channel + 8, 100) > ui32FrequencyLimit)		//no/less water in pot 
+	// if ((FDC_getCap(ui32Channel)/5243) > ui32FrequencyLimit)		//no/less water in pot 
 	{
-		return true;
+		return false;
 	}
 	else
 	{
-		return false;									//water in pot
+		return true;									//water in pot
 	}
 }
 
 //initalise powerstage
 bool bPowerstage_init(void)
 {
+	static bool s_bPowerstageInitDone = false;
+	if (!s_bPowerstageInitDone)
+	{
+		s_bPowerstageInitDone = true;
+	}
+	else
+	{
+		return false;		//already done
+	}
+	
+	ESP_LOGI("Powerstage", "bPowerstage_init");
+
 	//init driver enable
 	gpio_config_t io_conf;
 	io_conf.intr_type = GPIO_INTR_DISABLE;                                                    			//disable interrupt
 	io_conf.mode = GPIO_MODE_OUTPUT;                                                          			//set as output mode
-	io_conf.pin_bit_mask = ((1ULL << PIN_SEL1_EN)|(1ULL << PIN_SEL2_EN)|(1ULL << PIN_PUMP_EN));   	  	//bit mask of the pins
+	io_conf.pin_bit_mask = ((1ULL << PIN_SEL_EN)|(1ULL << PIN_PUMP_EN));   	  	//bit mask of the pins
 	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE  ;                                           			//disable pull-down mode
 	io_conf.pull_up_en = GPIO_PULLUP_DISABLE ;                                                			//disable pull-up mode
 	gpio_config(&io_conf);
-	gpio_set_level(PIN_SEL1_EN, 0);
-	gpio_set_level(PIN_SEL2_EN, 0);
+	gpio_set_level(PIN_SEL_EN, 0);
 	gpio_set_level(PIN_PUMP_EN, 0);
 
 
 	//init speed measurement (Hall sensor)
+	speed_sens_evt_queue = xQueueCreate(1, sizeof(uint32_t));
+	// xTaskCreate(speed_sens_task, "speed_sens_task", 2048, NULL, 10, NULL);
+
+	gpio_install_isr_service(0);
+	gpio_isr_handler_add(PIN_PUMP_SPEED, speed_sens_isr_handler, (void*) PIN_PUMP_SPEED);
+
 	io_conf.intr_type = GPIO_INTR_POSEDGE;//GPIO_INTR_POSEDGE;                                                    //interrupt pos edge
 	io_conf.mode = GPIO_MODE_INPUT;                                                          	//set as output mode
 	io_conf.pin_bit_mask = (1ULL << PIN_PUMP_SPEED);     											//bit mask of the pins
@@ -258,12 +209,6 @@ bool bPowerstage_init(void)
 	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;                                                //disable pull-up mode
 	gpio_config(&io_conf);
 	
-	speed_sens_evt_queue = xQueueCreate(1, sizeof(uint32_t));
-	// xTaskCreate(speed_sens_task, "speed_sens_task", 2048, NULL, 10, NULL);
-
-	gpio_install_isr_service(0);
-	gpio_isr_handler_add(PIN_PUMP_SPEED, speed_sens_isr_handler, (void*) PIN_PUMP_SPEED);
-
 	//  //init position input pin
 	//  io_conf.intr_type = GPIO_INTR_DISABLE;                                                    //disable interrupt
 	//  io_conf.mode = GPIO_MODE_INPUT;                                                          	//set as output mode
@@ -281,7 +226,7 @@ bool bPowerstage_init(void)
         .speed_mode       = LEDC_HIGH_SPEED_MODE,
         .timer_num        = LEDC_TIMER_0,
         .duty_resolution  = LEDC_TIMER_10_BIT,		//duty resolution 1023bit 
-        .freq_hz          = 500,  					// Set output frequency at 1 kHz
+        .freq_hz          = 1000,  					// Set output frequency at 500 Hz
         .clk_cfg          = LEDC_AUTO_CLK
     };
     ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
@@ -331,7 +276,6 @@ bool bPowerstage_init(void)
 	{
 		ui32BattVolt_read();
 	}
-
 
 	// ESP_LOGI("MCPWM: ", "ui32SelPos: %d", (int)s_ui32SelPos);
 	return true;
@@ -387,7 +331,7 @@ static void IRAM_ATTR speed_sens_isr_handler(void* arg)
 			{
 				ui32SpeedPulse = (uint32_t)i64SpeedPulseDuration;
 				i64PulseStart = i64PulseEnd;
-				xQueueSendFromISR(speed_sens_evt_queue, &ui32SpeedPulse, NULL);		xQueueSendFromISR(speed_sens_evt_queue, &ui32SpeedPulse, NULL);
+				xQueueSendFromISR(speed_sens_evt_queue, &ui32SpeedPulse, NULL);
 				s_i32MotorDuration = ui32SpeedPulse;			
 			}
 		}		
@@ -588,6 +532,7 @@ esp_err_t selector_stop(void)
 	return err;
 }
 
+
 //stop pump motor  $return: esp_err_t -> running motor sucessful
 esp_err_t pump_stop(void)
 {
@@ -600,258 +545,10 @@ esp_err_t pump_stop(void)
 	return err;
 }
 
-// //regulation of selector motor $return: float -> dutycycle for selector
-// esp_err_sel_t selector_motor_regulation(motor_direction_t eDirection)
-// {
-// 	esp_err_sel_t err = ERR_SEL_OK;
-
-// 	static int32_t i32OCcount = 0;
-// 	int32_t i32AdcValue = adc1_get_raw(PIN_CURSEL_SENS);
-// 	i32AdcValue += adc1_get_raw(PIN_CURSEL_SENS);
-// 	i32AdcValue >>= 1;
-// 	//16Q4 = ((12Q0 * 15Q16 -> 27Q16 >> 10 -> 17Q6) + 14Q6 -> 17Q6) >> 2 -> 15Q4[mV]
-// 	int32_t i32AdcReadVoltage = (((i32AdcValue * s_sAdcCalibration.adcValueFactor) >> 10) + s_sAdcCalibration.adcValueOffset) >> 2;
-// 	int32_t i32SelCurrent = i32AdcReadVoltage * 10;		// i32AdcReadVoltage / 0.1Ohm -> *10
-// 	//18Q4*10Q6 -> 28Q10
-// 	int32_t i32SelResVoltage = i32SelCurrent * (uint32_t)(1.75 * 64);	//[mV] = 15Q4[mA] * 10Q6[R] (Resistance motor 1,6R + driver ,15R)
-// 	int32_t i32SelSetVoltage = i32SelResVoltage + (uint32_t)(700 * 1024);
-// 	int32_t i32DutyCyle = i32SelSetVoltage / s_ui32BattVoltage;			//29Q10 / 14Q0 -> 15Q10
-// 	// float fDutyCylce = (float)i32DutyCyle / 10.24;
-
-// 	//check for stucked motor/ overcurrent
-// 	if (i32DutyCyle > 1000)
-// 	{
-// 		i32DutyCyle = 1000;
-// 		i32OCcount++;
-// 		if (i32OCcount > 200)
-// 		{
-// 			selector_stop();
-// 			return ERR_SEL_OC;
-// 		}
-// 	}
-// 	else
-// 	{
-// 		i32OCcount = 0;
-// 	}
-
-// 	switch(eDirection)
-// 	{
-// 		case MOTOR_DIR_UP:
-// 			//activate pwm
-// 			err = ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, i32DutyCyle);
-// 		    if (err != ESP_OK) break;
-// 			err = ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0);
-// 			// err = mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_GEN_A, fDutyCylce);
-// 			break;
-
-// 		case MOTOR_DIR_DOWN:
-// 			//activate pwm
-// 			err = ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_1, i32DutyCyle);
-// 		    if (err != ESP_OK) break;
-// 			err = ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_1);
-// 		    // err = mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_GEN_B, fDutyCylce);
-// 			break;
-
-// 		default:
-// 			break;
-// 	}
-// 	return err;
-// }
-
-// //position of selector $eMotorDirection: motor direction,  $return: motor position 0...16, 0(sel1), 1(sel1-2), 2(sel2),...
-// static uint32_t selector_pos(motor_direction_t eMotorDirection)
-// {
-// 	static uint32_t s_ui32HallIterator = 0;
-
-// 	gpio_set_level(PIN_MUX1, s_ui32HallIterator&1);        	//select Mux
-// 	gpio_set_level(PIN_MUX2, s_ui32HallIterator&2);
-// 	gpio_set_level(PIN_MUX3, s_ui32HallIterator&4);
-// 	vTaskDelay(10);										//wait 10ms
-// 	//selector pos changed
-// 	uint32_t ui32SelState = gpio_get_level(PIN_SEL_POS);
-
-// 	//select pos 0/8
-// 	if (s_ui32HallIterator == 0)
-// 	{
-// 		if (ui32SelState == 0)
-// 		{
-// 			//state changed from open - close
-// 			if((s_ui32SelPos != 0) ||(s_ui32SelPos != 16))
-// 			{
-// 				//select pos 0/8
-// 				if(s_ui32SelPos < 8)
-// 				{
-// 					s_ui32SelPos = 0;		//pos1
-// 				}
-// 				else
-// 				{
-// 					s_ui32SelPos = 16;		//pos9
-// 				}
-// 			}
-// 		}
-// 		else
-// 		{
-// 			//state changed from close - open
-// 			if ((s_ui32SelPos == 0) ||(s_ui32SelPos == 16))
-// 				{
-// 					switch(eMotorDirection)
-// 					{
-// 					case MOTOR_DIR_UP:
-// 						s_ui32SelPos++;
-// 						break;
-// 					case MOTOR_DIR_DOWN:
-// 						s_ui32SelPos--;
-// 						break;
-// 					default:
-// 						break;
-// 					}
-// 				}
-// 			}
-// 	}
-// 	//for the other states
-// 	else
-// 	{
-// 		if (ui32SelState == 0)
-// 		{
-// 			//state changed from open - close
-// 			if((s_ui32HallIterator << 1) != s_ui32SelPos)
-// 			{
-// 					s_ui32SelPos = s_ui32HallIterator << 1;
-// 			}
-// 		}
-// 		else
-// 		{
-// 			//state changed from close - open
-// 			if ((s_ui32HallIterator << 1) == s_ui32SelPos)
-// 			{
-// 				switch(eMotorDirection)
-// 				{
-// 				case MOTOR_DIR_UP:
-// 					s_ui32SelPos++;
-// 					break;
-// 				case MOTOR_DIR_DOWN:
-// 					s_ui32SelPos--;
-// 					break;
-// 				default:
-// 					break;
-// 				}
-// 			}
-// 		}
-// 	}
-
-// 	s_ui32HallIterator++;
-// 	if (s_ui32HallIterator > 7) s_ui32HallIterator = 0;
-// 	return s_ui32SelPos;
-// }
-
-// //positionate slector $ui32position: set position of selector, $return: esp_err_t -> positioning successfull
-// esp_err_sel_t selector_set(uint32_t ui32selPos)
-// {
-// 	if (ui32selPos > 16)
-// 	{
-// 		ESP_LOGE("Selector: ", "Error ui32selPos > 16");
-// 		return ERR_SEL_POS_OUTOFRANGE;
-// 	}
-// 	if (s_ui32SelPos > 16)
-// 	{
-// 		ESP_LOGE("Selector: ", "Error s_ui32SelPos > 16");
-// 		return ERR_SEL_POS_OUTOFRANGE;
-// 	}
-	
-// 	esp_err_sel_t err = ERR_SEL_OK;
-// 	motor_direction_t eMotorDir = MOTOR_DIR_IDLE;
-// 	uint32_t s_ui32TimeWatch = 0;
-// 	gpio_set_level(PIN_DRV_EN, 1);        		//enable driver
-// 	vTaskDelay(100);                            //wait for capacitors loaded
-
-// 	//positionate selector
-// 	if(selector_pos(eMotorDir) != ui32selPos)
-// 	{
-// //		led_switch(1, 1);
-// 		uint32_t ui32Position = selector_pos(eMotorDir);
-
-// 		if(ui32selPos > ui32Position)
-// 		{
-// 			eMotorDir = MOTOR_DIR_UP;
-// 		}
-// 		else
-// 		{
-// 			eMotorDir = MOTOR_DIR_DOWN;
-// 		}
-// 		selector_run(700, eMotorDir);		//dutycylce 70% * 1023
-
-// 		int32_t i32SelPosLast = (int32_t)s_ui32SelPos;
-// 		while(selector_pos(eMotorDir) != ui32selPos)
-// 		{
-// 			s_ui32TimeWatch++;
-// 			if (s_ui32TimeWatch > 1000)		//longer than 10s
-// 			{
-// 				selector_stop();
-// 				s_ui32SelPos = 20;	//pos unknown
-// 				err = ERR_SEL_OT;
-// 				ESP_LOGE("Selector: ", "Error Overtime");
-// 				break;
-// 			}
-// 			if (selector_motor_regulation(eMotorDir) == ERR_SEL_OC)
-// 			{
-// 				selector_stop();
-// 				err = ERR_SEL_OC;
-// 				ESP_LOGE("Selector: ", "Error Overcurrent");
-// 				break;
-// 			}
-// 			//selector pos changed
-// 			if (s_ui32SelPos != i32SelPosLast)
-// 			{
-// 				if ((eMotorDir == MOTOR_DIR_UP) && (s_ui32SelPos > ui32selPos))
-// 				{
-// 					selector_stop();
-// 					err = ERR_SEL_POS_OUTOFRANGE;
-// 					ESP_LOGE("Selector: ", "Error wrong direction");
-// 					break;
-// 				}
-// 				if ((eMotorDir == MOTOR_DIR_DOWN) && (s_ui32SelPos <  ui32selPos))
-// 				{
-// 					selector_stop();
-// 					err = ERR_SEL_POS_OUTOFRANGE;
-// 					ESP_LOGE("Selector: ", "Error wrong direction");
-// 					break;
-// 				}
-// 				//selector state next
-// 				if (abs((int32_t)s_ui32SelPos - i32SelPosLast) > 2)
-// 				{
-// 					selector_stop();
-// 					err = ERR_SEL_POS_OUTOFRANGE;
-// 					ESP_LOGE("Selector: ", "Error overstepping");
-// 					s_ui32SelPos = 20;
-// 					break;
-// 				}
-// 				i32SelPosLast = (int32_t)s_ui32SelPos;
-// 				ESP_LOGI("Selector: ", "ui32SelPosErr: %d", (int)s_ui32SelPos);
-// 			}
-// 		}
-
-// 		//intersteps
-// 		if (ui32selPos%2)
-// 		{
-// 			const uint32_t ui32Voltage = 500>>10;	//run with 500mV 18Q10
-// 			selector_run(ui32Voltage/s_ui32BattVoltage, eMotorDir);		//dutycylce 30% * 1023 - 10Q10
-// 			vTaskDelay(1000);
-// 		}
-// 		selector_stop();
-// //		led_switch(1, 0);
-// 	}
-
-// 	gpio_set_level(PIN_DRV_EN, 0);        		//disable driver
-// 	return err;
-// }
 
 //positionate slector $i32SetAngleRaw: set angle of selector, $eSelNb: number of selector, $bInitTLV: TLV initialized before? $return: esp_err_t -> positioning successfull
-esp_err_sel_t selector_setAngle(int32_t i32SetAngleRaw, selector_nb_t eSelNb, bool bInitTLV)
+esp_err_sel_t selector_setAngle(int32_t i32SetAngleRaw, bool bInitTLV)
 {
-	ESP_LOGI("Selector: ", "setAngle(%d,%d)", (int)i32SetAngleRaw, (int)eSelNb);
-	static gpio_num_t aePinSel[2] = {PIN_SEL1_EN, PIN_SEL2_EN};
-	// gpio_num_t ePinNb = aePinSel[eSelNb];
-
 	if (i32SetAngleRaw > 359)
 	{
 		ESP_LOGE("Selector: ", "Error angle > 360°");
@@ -862,11 +559,16 @@ esp_err_sel_t selector_setAngle(int32_t i32SetAngleRaw, selector_nb_t eSelNb, bo
 	if (!bInitTLV)
 	{	
 		i2c_deinit();
-		ESP_ERROR_CHECK(gpio_set_level(aePinSel[eSelNb], 1));        		//enable driver
+		ESP_ERROR_CHECK(gpio_set_level(PIN_SEL_EN, 1));        		//enable driver
 		vTaskDelay(100);		//wait for capacitors loaded
 		i2c_init();
+		// ESP_LOGI("I2C: ", "Init done");
 		TLV_init();				//init TLV sensor
+		// ESP_LOGI("TLV: ", "Init done");
 	}
+
+	//init powerstage
+	bPowerstage_init();
 
 	esp_err_sel_t err = ERR_SEL_OK;
 	motor_direction_t eMotorDir = MOTOR_DIR_IDLE;
@@ -1009,7 +711,7 @@ esp_err_sel_t selector_setAngle(int32_t i32SetAngleRaw, selector_nb_t eSelNb, bo
 
 	if (!bInitTLV)
 	{
-		gpio_set_level(aePinSel[eSelNb], 0);        		//disable driver
+		gpio_set_level(PIN_SEL_EN, 0);        		//disable driver
 	}														//deinit TLV sensor
 
 	return err;
@@ -1017,65 +719,60 @@ esp_err_sel_t selector_setAngle(int32_t i32SetAngleRaw, selector_nb_t eSelNb, bo
 
 
 //positionate slector $i32SetPos: set pos of selector, $eSelNb: number of selector $return: esp_err_t -> positioning successfull
-esp_err_sel_t selector_setPos(int32_t i32SetPos, selector_nb_t eSelNb)
+esp_err_sel_t selector_setPos(int32_t i32SetPos)
 {
-	const uint32_t caui32AnglePosSel1[5] = {300, 100, 160, 270, 70};		//angle pos for selector 1
-	const uint32_t caui32AnglePosSel2[5] = {320, 120, 240, 280, 70};		//angle pos for selector 2
-
-	switch (eSelNb)
+	if (i32SetPos < 0 || i32SetPos > 3)
 	{
-		case SELECTOR_1:
-			return selector_setAngle(caui32AnglePosSel1[i32SetPos], SELECTOR_1, false);	//set angle for selector 1
-		case SELECTOR_2:
-			return selector_setAngle(caui32AnglePosSel2[i32SetPos], SELECTOR_2, false);	//set angle for selector 2
-		default:
-			return ERR_SEL_POS_OUTOFRANGE;
+		ESP_LOGE("selector_setPos: ", "Error position out of range");
+		return ERR_SEL_POS_OUTOFRANGE;
 	}
+
+	const uint32_t caui32AnglePosSel[4] = {250, 340, 160, 80};		//angle pos for selector - device 1
+	// const uint32_t caui32AnglePosSel[4] = {40, 120, 300, 250};		//angle pos for selector - device 2
+
+	return selector_setAngle(caui32AnglePosSel[i32SetPos], false);	//set angle for selector
 }
 
 
-//calibrate slectors position $selector_nb_t: number of selector, $return: esp_err_t -> positioning successfull
-esp_err_sel_t selector_caliPos(selector_nb_t eSelNb)
+//calibrate slectors position $return: esp_err_t -> positioning successfull
+esp_err_sel_t selector_caliPos(void)
 {
 	ESP_LOGI("Selector: ", "selector_caliPos()");
 	uint32_t ui32TimeCount = 0;
-	gpio_num_t aePinSel[2] = {PIN_SEL1_EN, PIN_SEL2_EN};
-	adc_mux_t aeAdcSel[2] = {ADC_MUX_CUR_SEL1, ADC_MUX_CUR_SEL2};
 
 	//enable driver/magnet sensor
-	gpio_set_level(aePinSel[eSelNb], 1);        		//enable driver
+	gpio_set_level(PIN_SEL_EN, 1);        		//enable driver
 	vTaskDelay(100);
-	adc_read_mux(aeAdcSel[eSelNb], 1);		//read adc mux for current sensor
 
 	TLV_init();		//init TLV sensor
 	int32_t i32LastAngle = 0;
 	uint32_t ui32StuckCount = 0;
 
 	//position points dir down
-	for (int i = 0; i < 20; i++)
+	for (int i = 0; i < 36; i++)
 	{
-		selector_setAngle(i * 10, eSelNb, true);	//set angle +10° for next position
+		selector_setAngle(i * 10, true);	//set angle +10° for next position
 
 		uint32_t ui32Duty = 0;
 		int32_t i32Angle = i32TLV_getAngle();			//read first angle value
 		i32LastAngle = i32Angle;		
 		
-		while(i32LastAngle == i32Angle)
-		{
-			ui32Duty+=10;		//increase dutycycle
-			selector_run(ui32Duty, MOTOR_DIR_DOWN);		//dutycylce xx% * 1023
-			vTaskDelay(20);			//wait 10ms
-			i32Angle = i32TLV_getAngle();			//read new angle value
-			if(ui32Duty > 1000)
-			{
-				selector_stop();
-				ESP_LOGE("Selector: ", "Error timeout");
-				break;
-			}
-		}
+		// while(i32LastAngle == i32Angle)
+		// {
+		// 	ui32Duty+=10;		//increase dutycycle
+		// 	selector_run(ui32Duty, MOTOR_DIR_DOWN);		//dutycylce xx% * 1023
+		// 	vTaskDelay(20);			//wait 10ms
+		// 	i32Angle = i32TLV_getAngle();			//read new angle value
+		// 	if(ui32Duty > 1000)
+		// 	{
+		// 		selector_stop();
+		// 		ESP_LOGE("Selector: ", "Error timeout");
+		// 		break;
+		// 	}
+		// }
 
-		ESP_LOGI("Sel", "Pos: %i Duty: %i", i*10, (int)ui32Duty);
-		selector_stop();
+		ESP_LOGI("Sel", "Pos: %ld Frequency: %ld", i32Angle*10, (uint32_t)ui32AdcTouch_readPwmMux(PWM_MUX_SEL, 100));
+		// selector_stop();
 		// i32LastAngle = i32Angle;
 
 		// selector_run(300U, MOTOR_DIR_DOWN);		//dutycylce xx% * 1023
@@ -1113,7 +810,7 @@ esp_err_sel_t selector_caliPos(selector_nb_t eSelNb)
 //
 esp_err_pump_t pump_runTime(uint32_t ui32Time, motor_direction_t eDirection)
 {
-	const int32_t c_i32MotorSpeedSet = 5000;	//set motor speed in rpm
+	const int32_t c_i32MotorSpeedSet = 2500;	//set motor speed in rpm
 
 	esp_err_pump_t err = ERR_PUMP_OK;
 	int32_t i32BattVoltage = (int32_t)ui32BattVolt_read();					//measrure battery voltage
@@ -1128,7 +825,7 @@ esp_err_pump_t pump_runTime(uint32_t ui32Time, motor_direction_t eDirection)
 	s_i32MotorDuration = ui32SpeedSet;	
 	volatile uint32_t counter = 0;
 
-	volatile int32_t i32SpeedVoltage = 1500 * 1024; 		//initial speed voltage (first 100ms) 20Q10 [mV]
+	volatile int32_t i32SpeedVoltage = 500 * 1024; 		//initial speed voltage (first 100ms) 20Q10 [mV]
 
 	static volatile int32_t s_i32SpeedDevSum = 0; 			//i32SpeedVoltage/1024*1000;
 	volatile int32_t s_i32SpeedDevSumLast[] = {0,0,0,0,0};
@@ -1138,71 +835,80 @@ esp_err_pump_t pump_runTime(uint32_t ui32Time, motor_direction_t eDirection)
 		ESP_ERROR_CHECK(storage_read("SpeedDevSum", &s_i32SpeedDevSum));
 	}
 	
-	s_i32SpeedDevSum = 20000;		//delete for later purpose
+	// s_i32SpeedDevSum = 44782;		//delete for later purpose
 
 	// volatile int32_t i32CurrSet = 0;						//[mA]
 	// volatile int32_t i32CurrDevSum = 0;
 	// volatile int32_t i32CurrDevLast = 0;
 
+	int32_t i32AdcReadVoltageOffset = (int32_t)ui32AdcTouch_readAdcMux(ADC_MUX_CUR_PUMP, 2);
+	ESP_LOGI("pump_runTime","CurrVoltAct: %d", (int)ui32AdcTouch_readAdcMux(ADC_MUX_CUR_PUMP, 2));
+
+	int32_t i32OCcount = 0;
+
 	while(esp_timer_get_time() < i64EndTime)
 	{		
-		static int32_t i32OCcount = 0;
-
+		
 		//************************************************* speed adaption  ************************************************/
-		static int32_t s_i32MotorSpeed = 60000000;
-		const int32_t i32SpeedKp = (int32_t)(.005 * 1024);			//10Q10
-		const int32_t i32SpeedKi = (int32_t)(.005 * 1024);			//10Q10
-
-		//wait for 50ms
-		if(counter > 5)
-		{
-			int32_t i32MotorSpeed = 1;
-			s_i32MotorSpeed = s_i32MotorDuration;
-
-			i32MotorSpeed = 60000000 / s_i32MotorSpeed;	
-			int32_t i32RegDev = c_i32MotorSpeedSet - i32MotorSpeed;								//calc deviation to set speed
-			s_i32SpeedDevSum+=i32RegDev;
-			if (s_i32SpeedDevSum > 50000) s_i32SpeedDevSum = 500000;		//limit integral part to 2,5V
-			if (s_i32SpeedDevSum < -50000) s_i32SpeedDevSum = -200000;		//limit integral part to -1V
-			i32SpeedVoltage = (i32RegDev * i32SpeedKp) + (s_i32SpeedDevSum * i32SpeedKi);	//32Q10[mV]
-			s_i32SpeedDevSumLast[counter % 5] = s_i32SpeedDevSum;
-			// i32SpeedVoltage = 352000;
-			i32SpeedVoltage = 700*1024;
-		}
-		
-
-		//************************************************* current voltage regulation  ************************************************/
-		int32_t i32AdcValue = adc_read_mux(ADC_MUX_CUR_PUMP, 2);		//read adc mux for current sensor
-		// 16Q4 = ((12Q0 * 15Q16 -> 27Q16 >> 10 -> 17Q6) + 14Q6 -> 17Q6) >> 2 -> 15Q4[mV]
-		int32_t i32AdcReadVoltage = (((i32AdcValue * s_sAdcCalibration.adcValueFactor) >> 10) + s_sAdcCalibration.adcValueOffset) >> 2;
-		int32_t i32SelCurrent = i32AdcReadVoltage * 5;		// i32AdcReadVoltage / 0.2Ohm -> *5
-		//18Q4*10Q6 -> 28Q10
-		int32_t i32SelResVoltage = i32SelCurrent * (uint32_t)(1.05 * 64);	//[mV] = 15Q4[mA] * 10Q6[R] (Resistance motor 0,5R + driver ,15R)
-		// ESP_LOGI("pump_runTime","i32SelResVoltage: %ld",i32SelResVoltage>>10);
-		int32_t i32SelSetVoltage = i32SelResVoltage + i32SpeedVoltage;
-		i32SelSetVoltage = 2500 * 1024;	//2V
-		int32_t i32DutyCyle = i32SelSetVoltage / i32BattVoltage;			//29Q10 / 14Q0 -> 15Q10
-
-		ESP_LOGI("pump_runTime","Counter: %d, Speed: %drpm, i32SpeedVoltage: %d, CurrAct: %d, s_i32SpeedDevSum: %d", (int)counter, (int)(60000000 / s_i32MotorDuration), (int)i32SpeedVoltage, (int)i32AdcValue, (int)s_i32SpeedDevSum);
-		//************************************************* speed regulation  ************************************************/
 		// static int32_t s_i32MotorSpeed = 60000000;
-		
-		// if ((counter%3)==0)
+		// const int32_t i32SpeedKp = (int32_t)(.005 * 1024);			//10Q10
+		// const int32_t i32SpeedKi = (int32_t)(.005 * 1024);			//10Q10
+
+		// //wait for 50ms
+		// if(counter > 5)
 		// {
 		// 	int32_t i32MotorSpeed = 1;
-		// 	// xQueueReceive(speed_sens_evt_queue, &s_i32MotorSpeed, 0);
 		// 	s_i32MotorSpeed = s_i32MotorDuration;
-		// 	i32MotorSpeed = 60000000 / s_i32MotorSpeed;											//calc time to frequency [rpm]
-		// 	int32_t i32SpeedKp = (int32_t)(0.0 * 1024);		//10Q10
-		// 	int32_t i32SpeedKi = (int32_t)(0.1 * 1024);		//10Q10;
 
+		// 	i32MotorSpeed = 60000000 / s_i32MotorSpeed;	
 		// 	int32_t i32RegDev = c_i32MotorSpeedSet - i32MotorSpeed;								//calc deviation to set speed
-
+		// 	ESP_LOGI("pump_runTime","i32RegDev: %d", (int)i32RegDev);
 		// 	s_i32SpeedDevSum+=i32RegDev;
-		// 	i32CurrSet = (i32RegDev * i32SpeedKp) + (s_i32SpeedDevSum * i32SpeedKi);											//calc dutycycle 22Q10
-		// 	i32CurrSet>>=10;																	//shift 20Q10 to 32Q0
-		// 	i32CurrSet += 160;			//[160mA @ 40001/min] "vorsteuerung" speed control, current with no load
+		// 	// if (s_i32SpeedDevSum > 50000) s_i32SpeedDevSum = 500000;		//limit integral part to 2,5V
+		// 	// if (s_i32SpeedDevSum < -20000) s_i32SpeedDevSum = -200000;		//limit integral part to -1V
+		// 	i32SpeedVoltage = (i32RegDev * i32SpeedKp) + (s_i32SpeedDevSum * i32SpeedKi);	//32Q10[mV]
+		// 	s_i32SpeedDevSumLast[counter % 5] = s_i32SpeedDevSum;
+		// 	// i32SpeedVoltage = 352000;
+		// 	// i32SpeedVoltage = 500*1024;
 		// }
+		
+
+		// //************************************************* current voltage regulation  ************************************************/
+		// int32_t i32AdcReadVoltage = ui32AdcTouch_readAdcMux(ADC_MUX_CUR_PUMP, 2);		//read adc mux for current sensor 12Q0[mV]
+		// //16Q4 -> 12Q0 * 12Q8 -> 24Q8 >> 4 -> 16Q4[mA]
+		// int32_t i32SelCurrent = ((i32AdcReadVoltage - i32AdcReadVoltageOffset) * ((int32_t)(2.275 * 256)))>>4;		// 2.275 mA/mV sensitivity
+		// //18Q4*10Q6 -> 28Q10
+		// int32_t i32SelResVoltage = i32SelCurrent * (uint32_t)(1.65 * 64);	//[mV] = 15Q4[mA] * 10Q6[R] (Resistance motor 1,5R + driver ,15R)
+		// // ESP_LOGI("pump_runTime","i32SelResVoltage: %ld",i32SelResVoltage>>10);
+		// int32_t i32SelSetVoltage = i32SelResVoltage + i32SpeedVoltage;
+		// // i32SelSetVoltage = 2500 * 1024;	//2V
+		// int32_t i32DutyCyle = i32SelSetVoltage / i32BattVoltage;			//29Q10 / 14Q0 -> 15Q10
+		// // int32_t i32DutyCyle = 1500*1024 / i32BattVoltage;	
+
+		// ESP_LOGI("pump_runTime","Counter: %d, Speed: %drpm, i32SpeedVoltage: %d, CurrAct: %d, s_i32SpeedDevSum: %d", (int)counter, (int)(60000000 / s_i32MotorDuration), (int)i32SpeedVoltage, (int)(i32SelCurrent >> 4), (int)s_i32SpeedDevSum);
+		//************************************************* speed regulation  ************************************************/
+		// static int32_t s_i32MotorSpeed = 60000000;
+		int32_t i32DutyCyle = 0;
+		if ((counter%1)==0)
+		{
+			int32_t i32MotorSpeed = 1;
+			// xQueueReceive(speed_sens_evt_queue, &s_i32MotorSpeed, 0);
+			i32MotorSpeed = 60000000 / s_i32MotorDuration;											//calc time to frequency [rpm]
+			int32_t i32SpeedKp = (int32_t)(0.1 * 1024);		//10Q10
+			int32_t i32SpeedKi = (int32_t)(0.02 * 1024);		//10Q10;
+
+			int32_t i32RegDev = c_i32MotorSpeedSet - i32MotorSpeed;								//calc deviation to set speed
+
+			s_i32SpeedDevSum+=i32RegDev;
+			i32DutyCyle  = ((i32RegDev * i32SpeedKp) + (s_i32SpeedDevSum * i32SpeedKi))>>10;											//calc dutycycle 22Q10
+			// i32DutyCyle += 250;																//Vorsteuerung
+			// i32CurrSet>>=10;																	//shift 20Q10 to 32Q0
+			// i32CurrSet += 160;			//[160mA @ 40001/min] "vorsteuerung" speed control, current with no load
+			ESP_LOGI("pump_runTime","counter: %d, i32MotorSpeed: %d, i32RegDev: %d, i32DutyCyle: %d, s_i32SpeedDevSum: %d", (int)counter, (int)i32MotorSpeed, (int)i32RegDev, (int)i32DutyCyle, (int)s_i32SpeedDevSum);
+		}
+
+		//save speed deviation
+		s_i32SpeedDevSumLast[counter % 5] = s_i32SpeedDevSum;
 
 		//************************************************* current regulation  ************************************************/
 		// int32_t i32AdcValue = adc_read_mux(ADC_MUX_CUR_PUMP, 2);		//read adc mux for current sensor
@@ -1232,6 +938,7 @@ esp_err_pump_t pump_runTime(uint32_t ui32Time, motor_direction_t eDirection)
 			{
 				err = ESP_ERR_INVALID_STATE;
 				pump_stop();
+				ESP_LOGE("pump_runTime","Error overcurrent");
 				return err;
 			}
 		}
@@ -1270,7 +977,7 @@ esp_err_pump_t pump_runTime(uint32_t ui32Time, motor_direction_t eDirection)
 		}
 		ui32ActTime++;
 		counter++;
-		vTaskDelay(10 / portTICK_PERIOD_MS);	
+		vTaskDelay(20 / portTICK_PERIOD_MS);	
 	}
 	pump_stop();
 	gpio_set_level(PIN_PUMP_EN, 0);        		//enable driver
@@ -1281,120 +988,31 @@ esp_err_pump_t pump_runTime(uint32_t ui32Time, motor_direction_t eDirection)
 	ESP_ERROR_CHECK(storage_read("SpeedDevSum", &ui32SpeedDevSumMeanLast));
 	int32_t i32SpeedDevSumMeanLast = (int32_t)ui32SpeedDevSumMeanLast;
 	int32_t i32SpeedDevSumMeanNext = ((i32SpeedDevSumMean - i32SpeedDevSumMeanLast)>>1) + i32SpeedDevSumMeanLast;
-	//only save on deviation > 5000
-	if ((abs(i32SpeedDevSumMeanLast - i32SpeedDevSumMeanNext) > 5000) && (i32SpeedDevSumMean > 0))
+	//only save on deviation > 2000
+	if ((abs(i32SpeedDevSumMeanLast - i32SpeedDevSumMeanNext) > 2000) && (i32SpeedDevSumMean > 0))
 	{
 		ESP_ERROR_CHECK(storage_write("SpeedDevSum", (uint32_t)i32SpeedDevSumMeanNext));
 		ESP_LOGI("pump_runTime","saved: %d", (int)i32SpeedDevSumMean);
 	}
 	ESP_LOGI("pump_runTime","i32SpeedDevSumMeanLast: %d, i32SpeedDevSumMeanNext: %d", (int)i32SpeedDevSumMeanLast, (int)i32SpeedDevSumMeanNext);
 	return err;
-	
 }
 
-// //run motor $ui32RunTime: run time in ms $return: esp_err_t -> running motor sucessful
-// esp_err_t motor_run(uint32_t ui32RunTime)
-// {
-// 	esp_err_t err = ESP_OK;
-
-// //	gpio_set_level(PIN_CUR_SENS_EN, 1);        	//enable sensing
-// //	vTaskDelay(100);                            //wait for capacitors loaded
-
-// 	gpio_set_level(PIN_DRV_EN, 1);        		//enable driver
-
-// 	//Proof if battery voltage is measured
-// 	if (s_ui32SupplyVoltage == 0)
-// 	{
-// 		ui32EspVolt_read();
-// 		if (err != ESP_OK) return err;
-// 	}
-
-// 	//calc average of 64 measurements
-// 	int32_t i32AdcReadSum = 0;
-// 	for (int iCount = 0; iCount < 64; iCount++)
-// 	{
-// 		i32AdcReadSum += adc1_get_raw(PIN_CURSEL_SENS);
-// 	}
-
-// 	//16Q4 = ((17Q6 * 15Q16 -> 32Q22 >> 16 -> 16Q6) + 14Q6 -> 17Q6) >> 2 -> 15Q4
-// 	i32AdcReadSum = (((i32AdcReadSum * s_sAdcCalibration.adcValueFactor) >> 16) + s_sAdcCalibration.adcValueOffset) >> 2;
-
-// 	//proof offset of current sensor
-// 	if((i32AdcReadSum < (120*16)) || (i32AdcReadSum > (180*16)))				//nominal 150mV (16Q4), proof range 120...180mV
-// 	{
-// 		err = ESP_ERR_INVALID_ARG;
-// 	}
-// 	s_i32CurSensOffsetVoltage = i32AdcReadSum;
-
-// 	//Proof if battery voltage is measured
-// 	if (s_ui32BattVoltage == 0)
-// 	{
-// 		ui32BattVolt_read();
-// 		if (err != ESP_OK) return err;
-// 	}
-
-// 	//activate pwm
-// 	err = ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, 300);
-//    	// mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_GEN_A, 30.0);	
-//     if (err != ESP_OK) return err;
-// 	err = ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0);	
-//     // mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_GEN_B, 30.0);
-//     if (err != ESP_OK) return err;
-// 	err = ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_1, 300);
-// 	// mcpwm_set_duty_type(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, MCPWM_DUTY_MODE_1);   	//nmos 1 switching
-//     if (err != ESP_OK) return err;
-// 	err = ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_1);
-// 	// mcpwm_set_duty_type(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_B, MCPWM_DUTY_MODE_1);   	//pmos 1 switching
-//     if (err != ESP_OK) return err;
-
-//     TickType_t xLastWakeTime;
-//     const TickType_t xFrequency = 10;		//frequency 100Hz
-// 	xLastWakeTime = xTaskGetTickCount();
-
-// //	led_switch(1, 1);
-// 	uint32_t xWasDelayed = 0;
-// 	uint32_t ui32AnalyserCount = 0;
-// 	for( ;; )
-// 	{
-// 		if (ui32AnalyserCount < 511)
-// 		{
-// 			// g_ai32Analyser[ui32AnalyserCount] = s_motorRegulation.currentAct;
-// 			ui32AnalyserCount++;
-// 		}
-
-// //		led_switch(1, 1);
-// 		vTaskDelayUntil( &xLastWakeTime, xFrequency);
-// 		motorRegulation();
-// 	    // mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_GEN_A, s_motorRegulation.pwmSet);
-// 	    // mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_GEN_B, s_motorRegulation.pwmSet);
-// 		xWasDelayed += 10;
-// 		if (xWasDelayed > ui32RunTime) break;
-// 	}
-
-// //	led_switch(1, 0);
-// //	gpio_set_level(PIN_CUR_SENS_EN, 0);        	//disable sensing
-
-//     // mcpwm_set_signal_low(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A);    //set to idle - nmos 1 low
-//     if (err != ESP_OK) return err;
-//     // mcpwm_set_signal_low(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_B);   //set to idle - pmos 1 high
-//     if (err != ESP_OK) return err;
-
-// 	gpio_set_level(PIN_DRV_EN, 0);        		//disable driver
-// 	return err;
-// }
-
-// uint32_t ui32ReadVariable(){
-// 	return s_motorRegulation.currentAct >> 4;
-// }
 
 //initialise adc function
-void adc_init()
+static pcnt_unit_handle_t s_pcnt_unit = NULL;				//pulsecount unit handle
+static volatile adc_mux_t s_eAdcChannel = ADC_MUX_IDLE;		//current adc channel
+static volatile bool s_bAdcMuxIdle = true;							//adc mux idle flag
+static adc_oneshot_unit_handle_t s_eAdc1Handle = NULL;		//adc1 handle
+adc_cali_handle_t s_eCaliHandle = NULL;
+
+void adcTouch_init()
 {
-	//init driver/sensing and supply enable pin
+	//init sensing and supply enable pin
 	gpio_config_t io_conf;
 	io_conf.intr_type = GPIO_INTR_DISABLE;                                                    //disable interrupt
 	io_conf.mode = GPIO_MODE_OUTPUT;                                                          //set as output mode
-	io_conf.pin_bit_mask = ((1ULL << PIN_DRV_EN)|(1ULL << PIN_SENS_EN));     		  //bit mask of the pins
+	io_conf.pin_bit_mask = ((1ULL << PIN_ADC_MUX_EN)|(1ULL << PIN_PWM_MUX_EN)|(1ULL << PIN_SENS_EN));     		  		 //bit mask of the pins
 	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE  ;                                           //disable pull-down mode
 	io_conf.pull_up_en = GPIO_PULLUP_DISABLE ;                                                //disable pull-up mode
 	gpio_config(&io_conf);
@@ -1416,34 +1034,88 @@ void adc_init()
 	io_conf.pull_up_en = GPIO_PULLUP_DISABLE ;                                                //disable pull-up mode
 	gpio_config(&io_conf);
 
-	adc1_config_width(ADC_WIDTH_BIT_12);
-	adc1_config_channel_atten(PIN_ADC_MUX, ADC_ATTEN_DB_0);
+	//init PIN_PWM_MUX
+	io_conf.intr_type = GPIO_INTR_DISABLE;                                                    //disable interrupt
+	io_conf.mode = GPIO_MODE_INPUT;                                                          //set as output mode
+	io_conf.pin_bit_mask = ((1ULL << PIN_PWM_MUX));    		  									//bit mask of the pins
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE  ;                                           //disable pull-down mode
+	io_conf.pull_up_en = GPIO_PULLUP_DISABLE ;                                                //disable pull-up mode
+	gpio_config(&io_conf);
 
-	gpio_set_level(PIN_DRV_EN, 1);                                                            //enable drv sensing
+	// //init PIN_ADC_MUX
+	// adc1_config_width(ADC_WIDTH_BIT_12);
+	// adc1_config_channel_atten(PIN_ADC_MUX, ADC_ATTEN_DB_0);
+
+	//init adc of PIN_ADC_MUX and calibration
+	adc_oneshot_unit_init_cfg_t init_config1 = 
+	{
+    	.unit_id = ADC_UNIT_1,
+    	.ulp_mode = ADC_ULP_MODE_DISABLE,
+	};
+	ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &s_eAdc1Handle));
+
+	adc_oneshot_chan_cfg_t config = {
+		.bitwidth = ADC_BITWIDTH_12,
+		.atten = ADC_ATTEN_DB_0,
+	};
+	ESP_ERROR_CHECK(adc_oneshot_config_channel(s_eAdc1Handle, PIN_ADC_MUX, &config));
+
+	adc_cali_line_fitting_config_t cali_config = {			//calibration config
+		.unit_id = ADC_UNIT_1,
+		.atten = ADC_ATTEN_DB_0,
+		.bitwidth = ADC_BITWIDTH_12,
+	};
+	ESP_ERROR_CHECK(adc_cali_create_scheme_line_fitting(&cali_config, &s_eCaliHandle));
+
+	//set pins
+	gpio_set_level(PIN_ADC_MUX_EN, 0);                                                            //disable adc mux 
+	gpio_set_level(PIN_PWM_MUX_EN, 0);                                                            //disable pwm mux
 	gpio_set_level(PIN_SENS_EN, 1);                                                           //enable supply sensing
 	gpio_set_level(PIN_ADCMUX1, 0);                                                           //disable MUX 
 	gpio_set_level(PIN_ADCMUX2, 0);                                                           //
 	gpio_set_level(PIN_ADCMUX3, 0);                                                           //
 
-	//set values from storage
-	storage_read("adc_cali_factor", &s_sAdcCalibration.adcValueFactor);		//32Q32
-	storage_read("adc_cali_offset", &s_sAdcCalibration.adcValueOffset);		//32Q16
+	//init pulse counter for touch sensing
+	pcnt_unit_config_t unit_config = {
+		.high_limit = 30000,      
+		.low_limit = -30000,
+		// .flags.accum_count = true, // enable counter accumulation
+	};
+	ESP_ERROR_CHECK(pcnt_new_unit(&unit_config, &s_pcnt_unit));
+	pcnt_chan_config_t chan_config = {
+		.edge_gpio_num = PIN_PWM_MUX,
+		.level_gpio_num = -1, // Not used
+	};
+	pcnt_channel_handle_t pcnt_chan = NULL;
+	ESP_ERROR_CHECK(pcnt_new_channel(s_pcnt_unit, &chan_config, &pcnt_chan));
+	ESP_ERROR_CHECK(pcnt_channel_set_edge_action(pcnt_chan, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_HOLD));
+	ESP_ERROR_CHECK(pcnt_unit_enable(s_pcnt_unit));
 }
 
-//read adc values over mux $eAdcChannel: enum of adc channel,  $ui32NbMean: quantities of adc measurements for mean value, $output: adc value Q12
-uint32_t adc_read_mux(adc_mux_t eAdcChannel, uint32_t ui32NbMean)
-{
-	static uint32_t s_ui32Mem = 0;		//static memory for adc channel
 
-	if (s_ui32Mem != (eAdcChannel + 1))
-	{	
-		// gpio_set_level(PIN_DRV_EN, 1);                                                            		//enable drv sensing
+//read adc values from mux $eAdcChannel: enum of adc channel,  $ui32NbMean: quantities of adc measurements for mean value, $output: adc voltage 12Q0[mV]
+uint32_t ui32AdcTouch_readAdcMux(adc_mux_t eAdcChannel, uint32_t ui32NbMean)
+{
+	//check if module is running
+	if (!s_bAdcMuxIdle)
+	{
+		ESP_LOGE("ui32Adc_readMux", "ADC Mux busy");
+		return 0;
+	}
+	s_bAdcMuxIdle = false;
+
+	if (s_eAdcChannel != eAdcChannel)
+	{
+		if (eAdcChannel > 7) {
+			ESP_LOGE("ui32AdcTouch_readAdcMux", "Invalid ADC channel %d", (int)eAdcChannel);
+			return 0;
+		}
+
+		gpio_set_level(PIN_PWM_MUX_EN, 0);                                                            		//disable PWM sensing
+		gpio_set_level(PIN_ADC_MUX_EN, 1);                                                            		//enable ADC sensing
 		
-		// //enable sensing supply 
-		// if (eAdcChannel < 4)
-		// {
-		// 	gpio_set_level(PIN_SENS_EN, 1);                                                           //enable supply sensing
-		// }
+		//wait for previous adc mux to disable
+		vTaskDelay(10);	
 
 		//set mux channel
 		gpio_set_level(PIN_ADCMUX1, eAdcChannel&1);        	//select Mux
@@ -1452,61 +1124,94 @@ uint32_t adc_read_mux(adc_mux_t eAdcChannel, uint32_t ui32NbMean)
 
 		vTaskDelay(50);                                 //wait for capacitors loaded
 
-		s_ui32Mem = eAdcChannel + 1;		//save last channel		
+		s_eAdcChannel = eAdcChannel;						//save last channel		
 	}
-	
-	uint32_t ui32AdcReadSum = adc1_get_raw(PIN_ADC_MUX);			//adc read sum
+	int iAdcRaw = 0;
+	int iVoltage = 0;
+	ESP_ERROR_CHECK(adc_oneshot_read(s_eAdc1Handle, PIN_ADC_MUX, &iAdcRaw));
+	ESP_ERROR_CHECK(adc_cali_raw_to_voltage(s_eCaliHandle, iAdcRaw, &iVoltage));
+
+	uint32_t ui32AdcReadSum = (uint32_t)iVoltage;			//adc read sum
 	// ESP_LOGI("ADC: ", "ui32AdcReadSum: %d", (int)ui32AdcReadSum);
 	if (ui32NbMean > 1)
 	{	
 		for (uint32_t iCount = 1; iCount < ui32NbMean; iCount++)
 		{
-			ui32AdcReadSum += adc1_get_raw(PIN_ADC_MUX);
-		}	
+			ESP_ERROR_CHECK(adc_oneshot_read(s_eAdc1Handle, PIN_ADC_MUX, &iAdcRaw));
+			ESP_ERROR_CHECK(adc_cali_raw_to_voltage(s_eCaliHandle, iAdcRaw, &iVoltage));
+			ui32AdcReadSum += iVoltage;
+		}
 		ui32AdcReadSum /= ui32NbMean;		//calc mean value
 	}
 	// ESP_LOGI("ADC: ", "ui32AdcReadSum: %d", (int)ui32AdcReadSum);
+	s_bAdcMuxIdle = true;			//release idle flag	
 	return ui32AdcReadSum;
 }
 
-//calibrate ADC peripherie with 2 point calibration - on Pin S7 of ADC Mux
-esp_err_t adc_calibration_150mV()
+//count touch pwm pulses $return: uint32_t - frequency of pulses [Hz]
+uint32_t ui32AdcTouch_readPwmMux(adc_mux_t eAdcChannel, uint32_t ui32TimeMs)
 {
-	esp_err_t eEspError = ESP_OK;
-
-	//calc average of 100 measurements
-	s_sAdcCalibration.adcValue150mV = adc_read_mux(ADC_MUX_TP, 100);		//read adc mux for 150mV
-	if((s_sAdcCalibration.adcValue150mV < 180) || (s_sAdcCalibration.adcValue150mV > 380))
+	//check if module is running
+	if (!s_bAdcMuxIdle)
 	{
-		eEspError = ESP_ERR_INVALID_ARG;
+		ESP_LOGE("ui32AdcTouch_readPwmMux", "ADC Mux busy");
+		return 0;
 	}
-	return eEspError;
+	s_bAdcMuxIdle = false;
+
+	if (eAdcChannel < 8) {
+		ESP_LOGE("ui32AdcTouch_readPwmMux", "Invalid ADC channel %d", (int)eAdcChannel);
+		return 0;
+	}
+
+	if (s_pcnt_unit == NULL) {
+		ESP_LOGE("Humidity", "PCNT unit not initialized");
+		return 0;
+	}
+
+	s_eAdcChannel = eAdcChannel;
+
+	//set mux channel
+	gpio_set_level(PIN_PWM_MUX_EN, 1);                                                            		//enable PWM sensing
+	gpio_set_level(PIN_ADC_MUX_EN, 0);                                                            		//disable ADC sensing
+
+	//set mux channel
+	gpio_set_level(PIN_ADCMUX1, eAdcChannel&1);        	//select Mux
+	gpio_set_level(PIN_ADCMUX2, eAdcChannel&2);
+	gpio_set_level(PIN_ADCMUX3, eAdcChannel&4);	
+
+	vTaskDelay(50);                                 //wait for capacitors loaded
+
+	// Clear the count and start the unit
+	ESP_ERROR_CHECK(pcnt_unit_clear_count(s_pcnt_unit));
+	ESP_ERROR_CHECK(pcnt_unit_start(s_pcnt_unit));
+	int64_t i64StartTime = esp_timer_get_time(); 
+
+	vTaskDelay(ui32TimeMs / portTICK_PERIOD_MS); // wait xxxms
+
+	ESP_ERROR_CHECK(pcnt_unit_stop(s_pcnt_unit));
+	int64_t i64EndTime = esp_timer_get_time();
+	int32_t i32Duration = (int32_t)(i64EndTime - i64StartTime);		//[us]
+
+	int iPulseCount = 0;
+	ESP_ERROR_CHECK(pcnt_unit_get_count(s_pcnt_unit, &iPulseCount));
+
+	int32_t i32Frequency = (int32_t)((int64_t)iPulseCount * 1000000 / (int64_t)i32Duration); 			// Calculate frequency in Hz
+	// ESP_LOGI("Humidity", "Frequency %d: %d", (int)ui32Channel, (int)i32Frequency);
+
+	// ESP_LOGI("Humidity", "Pulse Count: %d, Frequency: %d, Duration: %d", (int)iPulseCount, (int)i32Frequency, (int)i32Duration);
+
+	s_eAdcChannel = ADC_MUX_IDLE;
+	s_bAdcMuxIdle = true;			//release idle flag	
+	return (uint32_t)i32Frequency; // Convert to Hz
 }
 
-esp_err_t adc_calibration_850mV()
-{
-	esp_err_t eEspError = ESP_OK;
-
-	//calc average of 100 measurements
-	s_sAdcCalibration.adcValue850mV = adc_read_mux(ADC_MUX_TP, 100);
-	if((s_sAdcCalibration.adcValue850mV < 3060) || (s_sAdcCalibration.adcValue850mV > 3460))
-	{
-		return ESP_ERR_INVALID_ARG;
-	}
-	s_sAdcCalibration.adcValueFactor = (700U * 65536U) / (s_sAdcCalibration.adcValue850mV - s_sAdcCalibration.adcValue150mV); 			//deltaV(700mV->27Q16) / deltaADC(12Q0) = factor(15Q16)[digit/mV]
-	s_sAdcCalibration.adcValueOffset = (9830400 - (s_sAdcCalibration.adcValueFactor * s_sAdcCalibration.adcValue150mV)) >> 10;					//offsetV(150mV->32Q16) - (factor(15Q16) * valueADC150mV(12Q0) -> offsetV(32Q16) >> 10 -> 16Q6[mV]
-	eEspError = storage_write("adc_cali_factor", s_sAdcCalibration.adcValueFactor);
-	if (eEspError != ESP_OK) return eEspError;
-	eEspError = storage_write("adc_cali_offset", s_sAdcCalibration.adcValueOffset);
-	if (eEspError != ESP_OK) return eEspError;
-	return eEspError;
-}
 
 //read battery voltage $output: battery voltage [mV]
 uint32_t ui32BattVolt_read(void)
 {
-	//16Q0 = ((14Q2 * 15Q16 -> 29Q18 >> 12 -> 17Q6) + 14Q6 -> 17Q6) * 15Q12 -> 32Q18 >> 18 -> 14Q0
-	s_ui32BattVoltage =  ((((adc_read_mux(ADC_MUX_VOLT_BATT, 4) * s_sAdcCalibration.adcValueFactor) >> 10) + s_sAdcCalibration.adcValueOffset) * s_cui32BattVoltageFact) >> 18;
+	//16Q0 = 12Q0 * 16Q12 >> 12 -> 16Q0
+	s_ui32BattVoltage =  ((ui32AdcTouch_readAdcMux(ADC_MUX_VOLT_BATT, 4) * s_cui32BattVoltageFact) >> 12);
 	ESP_LOGI("ADC","ui32BattVolt_read: %d", (int)s_ui32BattVoltage);
 	return s_ui32BattVoltage;
 }
@@ -1514,8 +1219,8 @@ uint32_t ui32BattVolt_read(void)
 //read solar voltage $output: solar voltage [mV]
 uint32_t ui32SolarVolt_read(void)
 {
-	//16Q0 = ((14Q2 * 15Q16 -> 29Q18 >> 12 -> 17Q6) + 14Q6 -> 17Q6) * 15Q12 -> 32Q18 >> 18 -> 14Q0
-	uint32_t ui32SolarVoltage =  ((((adc_read_mux(ADC_MUX_VOLT_BATT, 4) * s_sAdcCalibration.adcValueFactor) >> 10) + s_sAdcCalibration.adcValueOffset) * s_cui32SolarVoltageFact) >> 18;
+	//16Q0 = 12Q0 * 16Q12 >> 12 -> 16Q0
+	uint32_t ui32SolarVoltage =  ((ui32AdcTouch_readAdcMux(ADC_MUX_VOLT_SOLAR, 4) * s_cui32SolarVoltageFact) >> 12);
 	ESP_LOGI("ADC","ui32SolarVoltage: %d", (int)ui32SolarVoltage);
 	return ui32SolarVoltage;
 }
@@ -1523,8 +1228,8 @@ uint32_t ui32SolarVolt_read(void)
 //read esp supply voltage $output: esp voltage [mV]
 uint32_t ui32EspVolt_read(void)
 {
-	  //16Q0 = ((14Q2 * 15Q16 -> 29Q18 >> 12 -> 17Q6) + 14Q6 -> 17Q6) * 15Q12 -> 32Q18 >> 18 -> 14Q0
-	  s_ui32SupplyVoltage = ((((adc_read_mux(ADC_MUX_VOLT_3V3, 4) * s_sAdcCalibration.adcValueFactor) >> 10) + s_sAdcCalibration.adcValueOffset) * s_cui32LogicVoltageFact) >> 18;
+	//16Q0 = 12Q0 * 16Q12 >> 12 -> 16Q0
+	s_ui32SupplyVoltage = ((ui32AdcTouch_readAdcMux(ADC_MUX_VOLT_3V3, 4) * s_cui32LogicVoltageFact) >> 12);
 	  return s_ui32SupplyVoltage;
 }
 
@@ -1539,12 +1244,13 @@ float fTemp_read(void)
 	//interpolate temperatures
 //	float fTemperatureFact = ((((float)iTempReadSum) * s_sAdcCalibration.adcValueFactor) + s_sAdcCalibration.adcValueOffset) / s_ui32SupplyVoltage;
 	//(14Q2 * 15Q16 -> 29Q18 >> 12 -> 17Q6) + 14Q6 -> 17Q6)
-	float fTemperatureFact = (float)((((adc_read_mux(ADC_MUX_TEMP_PCB, 4) * s_sAdcCalibration.adcValueFactor) >> 10) + s_sAdcCalibration.adcValueOffset) >> 6) / s_ui32SupplyVoltage;
+	ESP_LOGI("TEMP","Raw Temp Value: %d", (int)ui32AdcTouch_readAdcMux(ADC_MUX_TEMP_PCB, 4));
+	float fTemperatureFact = (float)(ui32AdcTouch_readAdcMux(ADC_MUX_TEMP_PCB, 4) / (float)s_ui32SupplyVoltage);
 	for (int iTempCount = 0; iTempCount < 14; iTempCount ++)
 	  {
 		if (g_cafNTCFactValues[iTempCount] >  fTemperatureFact)
 		{
-		  return g_cafNTCTempValues[iTempCount - 1] + (5/(g_cafNTCFactValues[iTempCount] - g_cafNTCFactValues[iTempCount - 1])*(fTemperatureFact - g_cafNTCFactValues[iTempCount - 1]));
+		  return g_cafNTCTempValues[iTempCount - 1] + (5.0/(g_cafNTCFactValues[iTempCount] - g_cafNTCFactValues[iTempCount - 1])*(fTemperatureFact - g_cafNTCFactValues[iTempCount - 1]));
 		}
 	  }
 
@@ -1558,214 +1264,126 @@ uint32_t ui32Charge_read(void)
 	return ui32ChargeValue;			
 }
 
-// //touch interrupt service routine
-// static volatile uint32_t s_ui32TouchIsrButtonTriggered = 0;
-// /*
-// static void touch_isr(void *arg)
-// {
-// 	if ((touch_pad_get_status() >> PIN_BUTTON) & 0x01)
-// 	{
-// 		s_ui32TouchIsrButtonTriggered = 1;
-// 	}
-// 	touch_pad_clear_status();
-// }
-// */
-
-//initialise touch
-void touch_init1(void)
+//read water level in ml $output: water level [ml]
+uint32_t ui32Level_readMl(void)
 {
-	uint16_t clock_cycle = 0;
-	ESP_ERROR_CHECK(touch_pad_init());
-	ESP_ERROR_CHECK(touch_pad_set_cnt_mode(PIN_TOUCH, TOUCH_PAD_SLOPE_7, TOUCH_PAD_TIE_OPT_LOW));      		//slope of touch sensor - equivalent ot current from 1(weak) to 7(fast)
-	ESP_ERROR_CHECK(touch_pad_set_voltage(TOUCH_HVOLT_2V7, TOUCH_LVOLT_0V5, TOUCH_HVOLT_ATTEN_0V));          	//voltages levels
-	// ESP_ERROR_CHECK(touch_pad_set_fsm_mode(TOUCH_FSM_MODE_TIMER));												//hardware mode
-	// ESP_ERROR_CHECK(touch_pad_set_meas_time(0x7530, 0xFFFF));                                                	//sleept time 0x7530 / 150Khz = 200 ms; measure time 0xffff / 8Mhz = 8.19ms
-	ESP_ERROR_CHECK(touch_pad_config(PIN_TOUCH, 0));                                                   		//touch treshold no use
-	ESP_ERROR_CHECK(touch_pad_get_measurement_clock_cycles(&clock_cycle));
-	ESP_ERROR_CHECK(touch_pad_set_measurement_clock_cycles(0xffff));
-	ESP_LOGI("TOUCH", "Clock cycles: %d", clock_cycle);														//get clock cycles for touch pad measurement
+	int32_t i32LevelFreq = (int32_t)ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL, 100);				//read water level sensor
+	i32LevelFreq += (int32_t)ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL, 100);				//read water level sensor
+	i32LevelFreq += (int32_t)ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL, 100);				//read water level sensor
+	i32LevelFreq += (int32_t)ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL, 100);				//read water level sensor
+	i32LevelFreq = i32LevelFreq >> 2;		//calc mean value
 
-	// touch_pad_config(PIN_WATER_BOTTOM, 0);                                                  					//touch treshold no use
-	// ESP_ERROR_CHECK(touch_pad_config(PIN_BUTTON, 1500));                                                        //touch treshold no use
-	// ESP_ERROR_CHECK(touch_pad_set_trigger_mode(TOUCH_TRIGGER_BELOW));
-	// ESP_ERROR_CHECK(touch_pad_isr_register(touch_isr, NULL));
-	// ESP_ERROR_CHECK(touch_pad_intr_enable());
+	int32_t i32LevelMl = 0;		
 
-	// read storage
-	// storage_read("level_min", &s_ui32LevelMin);
-	// storage_read("level_max", &s_ui32LevelMax);
+	//0ml -> 6000Hz, 600ml -> 5740Hz, 1750ml -> 4820Hz
+	const int32_t c_i32LevelCurveFreq[] = {5980, 5740, 4820};
+	const int32_t c_i32LevelCurveMl[] = {0, 600, 1750};
 
-	// xTaskCreate(Button_task, "button_event_task", 1024, NULL, 5, NULL);    										//1024 Create a task to handler TOUCH event from ISR
-}
-
-void touch_deinit1(void)
-{
-	touch_pad_deinit();
-}
-
-//read the value of water level sensor
-uint32_t ui32Level_read(void)
-{
-	uint16_t i32TouchValue;
-	uint32_t i32TouchValueSum = 0;
-
-	//calculate mean value of x measurements
-	static const uint32_t ui32MeanQty = 4;
-	for (uint32_t count = 0; count < ui32MeanQty; count++)
+	if (i32LevelFreq > c_i32LevelCurveFreq[1])
 	{
-		touch_pad_read(PIN_TOUCH, &i32TouchValue);
-		i32TouchValueSum += i32TouchValue;
+		i32LevelMl = (c_i32LevelCurveFreq[0] - i32LevelFreq) * (c_i32LevelCurveMl[1] - c_i32LevelCurveMl[0]) / (c_i32LevelCurveFreq[0] - c_i32LevelCurveFreq[1]);
+	}
+	else
+	{
+		i32LevelMl = (c_i32LevelCurveFreq[1] - i32LevelFreq) * (c_i32LevelCurveMl[2] - c_i32LevelCurveMl[1]) / (c_i32LevelCurveFreq[1] - c_i32LevelCurveFreq[2]);
+		i32LevelMl += c_i32LevelCurveMl[0];
+	}
+	ESP_LOGI("ui32Level_readMl","i32LevelFreq: %d, i32LevelMl: %d", (int)i32LevelFreq, (int)i32LevelMl);
+
+	if (i32LevelMl < 0) i32LevelMl = 0;
+
+	return (uint32_t)i32LevelMl;			
+}
+
+//read water level in ml $output: water level [%]
+uint32_t ui32Level_readPerc(void)
+{
+	uint32_t ui32WaterLevelMl = ui32Level_readMl();
+	uint32_t ui32LevelPerc = 0;
+
+	//200ml -> 0%, 1600ml -> 100%
+
+	const uint32_t c_ui32LevelMinMl = 200;
+	const uint32_t c_ui32LevelMaxMl = 1600;
+
+	if (ui32WaterLevelMl > 1600)
+	{
+		ui32LevelPerc = 100;
+	}
+	else if(ui32WaterLevelMl < 200)
+	{
+		ui32LevelPerc = 0;
+	}
+	else
+	{
+		ui32LevelPerc = (ui32WaterLevelMl - c_ui32LevelMinMl) *100 / (c_ui32LevelMaxMl - c_ui32LevelMinMl);
 	}
 
-	i32TouchValueSum /= ui32MeanQty;			//round and calc mean value
-	return i32TouchValueSum;
-} 
+	ESP_LOGI("ui32Level_readPerc","ui32LevelPerc: %d", (int)ui32LevelPerc);
 
-// // //read the value of water level sensor
-// // uint32_t ui32Position_read(void)
-// // {
-// // 	uint16_t iTouchValue;
-// // 	uint32_t iTouchValueSum = 0;
-
-// // 	//calculate mean value of x measurements
-// // 	static const uint32_t uiMeanQty = 4;
-// // 	for (uint32_t count = 0; count < uiMeanQty; count++)
-// // 	{
-// // 		touch_pad_read(PIN_SELECTOR, &iTouchValue);
-// // 		iTouchValueSum += iTouchValue;
-// // 	}
-
-// // 	iTouchValueSum /= uiMeanQty;			//round and calc mean value
-// // 	return iTouchValueSum;
-// // } 
-
-// /* //set min water level value
-// bool bLevel_set_min(void)
-// {
-// 	uint16_t ui16TouchValue;
-// 	uint32_t ui32TouchValueSum = 0;
-
-// 	//calculate mean value of x measurements
-// 	static const uint32_t uiMeanQty = 20;
-// 	for (uint32_t count = 0; count < uiMeanQty; count++)
-// 	{
-// 		touch_pad_read(PIN_WATER_LEVEL, &ui16TouchValue);
-// 		ui32TouchValueSum += ui16TouchValue;
-// 	}
-
-// 	ui32TouchValueSum = (ui32TouchValueSum + (uiMeanQty / 2)) / uiMeanQty ;			//round and calc mean value
-// 	s_ui32LevelMin = ui32TouchValueSum;
-
-// 	esp_err_t err;
-// 	err = storage_write("level_min", ui32TouchValueSum);
-
-// 	if (err != ESP_OK)
-// 	{
-// 		return false;
-// 	}
-// 	return true;
-// } */
-
-// /* //set max water level value
-// bool bLevel_set_max(void)
-// {
-// 	uint16_t ui16TouchValue;
-// 	uint32_t ui32TouchValueSum = 0;
-
-// 	//calculate mean value of x measurements
-// 	static const uint32_t uiMeanQty = 20;
-// 	for (uint32_t count = 0; count < uiMeanQty; count++)
-// 	{
-// 		touch_pad_read(PIN_WATER_LEVEL, &ui16TouchValue);
-// 		ui32TouchValueSum += ui16TouchValue;
-// 	}
-
-// 	ui32TouchValueSum = (ui32TouchValueSum + (uiMeanQty / 2)) / uiMeanQty ;			//round and calc mean value
-// 	s_ui32LevelMax = ui32TouchValueSum;
-
-// 	esp_err_t err;
-// 	err = storage_write("level_max", ui32TouchValueSum);
-
-// 	if (err != ESP_OK)
-// 	{
-// 		return false;
-// 	}
-// 	return true;
-// } */
-
-// /* //read the value of water level sensor
-// uint32_t ui32Button_read(void)
-// {
-// 	uint16_t iTouchValue;
-// 	uint32_t iTouchValueSum = 0;
-
-// 	//calculate mean value of x measurements
-// 	static const uint32_t uiMeanQty = 4;
-// 	for (uint32_t count = 0; count < uiMeanQty; count++)
-// 	{
-// 		touch_pad_read(PIN_BUTTON, &iTouchValue);
-// 		iTouchValueSum += iTouchValue;
-// 	}
-
-// 	iTouchValueSum /= uiMeanQty;			//round and calc mean value
-// 	return iTouchValueSum;
-// } */
+	return ui32LevelPerc;
+}
 
 
+void HX710_init()
+{
+    gpio_config_t io_conf = {};
 
-// //static void timerx_init(timer_group_t group, timer_idx_t timer, bool auto_reload, float timer_interval_sec)
-// //{
-// //    /* Select and initialize basic parameters of the timer */
-// //    timer_config_t timer_config;
-// //      timer_config.alarm_en = TIMER_ALARM_EN;
-// //      timer_config.counter_en = TIMER_PAUSE;
-// //      timer_config.counter_dir = TIMER_COUNT_UP;
-// //      timer_config.auto_reload = TIMER_AUTORELOAD_EN;
-// //      timer_config.divider = 80;                //timer frequency 1Mhz
-// //    timer_init(group, timer, &timer_config);
-// //
-// //    /* Timer's counter will initially start from value below.
-// //       Also, if auto_reload is set, this value will be automatically reload on alarm */
-// //    timer_set_counter_value(group, timer, 0);
-// //
-// //    /* Configure the alarm value and the interrupt on alarm. */
-// //    timer_set_alarm_value(group, timer, (int)(timer_interval_sec * 1000000.0));
-// //    timer_enable_intr(group, timer);
-// //
-// //    //timer_isr_callback_add(group, timer, &timer0_callback, NULL, ESP_INTR_FLAG_IRAM,NULL);
-// //    timer_isr_register(group, timer, &timer0_callback, NULL, 0, NULL);
-// //    timer_start(group, timer);
-// //}
+    // DOUT als Input konfigurieren
+    io_conf.intr_type    = GPIO_INTR_DISABLE;
+    io_conf.mode         = GPIO_MODE_INPUT;
+    io_conf.pin_bit_mask = (1ULL << PIN_HX710_OUT);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en   = GPIO_PULLUP_DISABLE;
+    gpio_config(&io_conf);
 
-// //timer0 interrupt - 5kHZ cycle time for motor regulation
-// //static void IRAM_ATTR timer0_callback(void *arg)
-// //{
-// //	TIMERG0.int_clr_timers.t0 = 1;
-// //	TIMERG0.hw_timer[0].config.alarm_en = 1;
-// //
-// //	//digitalWrite(PIN_LED_RED, HIGH);
-// //	int32_t i32Value = adc1_get_raw(PIN_CURSENS) - s_i32CurSensOffsetVoltage;									//raw adc value
-// //	s_fCurSensValue = s_ci32CurSensFact * ((float)i32Value) / s_motorRegulation.pwmSet;				//calc current value in mA
-// //
-// //	if (s_fCurSensValue > s_motorRegulation.currentLimit)
-// //	{
-// //		//switch off device
-// //		motor_stop();
-// //		//set error
-// //		s_eMotorRegulationSM = MOTOR_REG_IDL;
-// //	}
-// //
-// //	//calc regulation
-// //	float fBackEMF = (s_ui32SupplyVoltage * s_motorRegulation.pwmSet / 100) - (s_fCurSensValue * s_cfMotorResistance);		//calc back emf value in mV
-// //
-// //	s_motorRegulation.pwmSet = 500.0 * (s_motorRegulation.voltageSet - fBackEMF);
-// //
-// //    mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_GEN_A, s_motorRegulation.pwmSet);
-// //    mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_GEN_B, s_motorRegulation.pwmSet);
-// //    mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_GEN_A, s_motorRegulation.pwmSet);
-// //    mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_GEN_B, s_motorRegulation.pwmSet);
-// //
-// //      //digitalWrite(PIN_LED_YEL, HIGH);
-// //
-// //  //digitalWrite(PIN_LED_RED, LOW);
-// //}
+    // SCK als Output konfigurieren
+    io_conf.mode         = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << PIN_HX710_SCK);
+    io_conf.pull_up_en   = GPIO_PULLUP_DISABLE;
+    gpio_config(&io_conf);
+
+    // SCK initial LOW
+    gpio_set_level(PIN_HX710_SCK, 0);
+}
+
+esp_err_t ui32HX710_read(int32_t *value)
+{
+	// wait for DOUT = LOW  (Data ready), Timeout ~200 ms
+    uint32_t timeout = 200000; // in microseconds
+	// esp_timer_get_time();
+    while (gpio_get_level(PIN_HX710_OUT) == 1) {
+        ets_delay_us(1);
+        if (--timeout == 0) {
+            return ESP_ERR_TIMEOUT; // Timeout
+        }
+    }
+
+    uint32_t raw = 0;
+
+    // 24 Datenbits einlesen (MSB zuerst)
+    for (int i = 0; i < 24; i++) {
+        gpio_set_level(PIN_HX710_SCK, 1);
+        ets_delay_us(1);
+        raw = (raw << 1) | gpio_get_level(PIN_HX710_OUT);
+        gpio_set_level(PIN_HX710_SCK, 0);
+        ets_delay_us(1);
+    }
+
+    // // Zusätzliche Pulse für Gain/Kanal-Auswahl (25 oder 26)
+    // for (int i = 24; i < pulses; i++) {
+    //     gpio_set_level(PIN_HX710_SCK,1);
+    //     ets_delay_us(1);
+    //     gpio_set_level(PIN_HX710_SCK, 0);
+    //     ets_delay_us(1);
+    // }
+
+    // 24-Bit Two's Complement → int32_t (Vorzeichenerweiterung)
+    if (raw & 0x800000) {
+        raw |= 0xFF000000;
+    }
+
+	ESP_LOGI("HX710", "Raw ADC Value: %d", (int)raw);
+    *value = (int32_t)raw;
+    return ESP_OK;
+}

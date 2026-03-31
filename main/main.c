@@ -4,6 +4,7 @@
 #include "watering.h"
 #include "peripherie/iic.h"
 #include "peripherie/tca6408.h"
+#include "ble_miflora.h"
 #include "log.h"
 
 void app_main(void)
@@ -11,15 +12,22 @@ void app_main(void)
 	ESP_LOGE("NVS", "%s", esp_err_to_name(storage_init()));	
 
 	led_init();
-	adc_init();
+	adcTouch_init();
 	uart_init();
 	i2c_init();	
+	bPowerstage_init();	
 
-	// bPowerstage_init();					
 	// humidity_init();
-	touch_init1();
+	// touch_init1();
 
 	// watering_init();
+
+  	RTCExt_getUnixTime();        //uncommented
+	log_peripherieData();
+	deepSleep_activate(1000000*60*20);		//log every 20 min data
+
+
+
 
 	// WakeUpCause_test();
 
@@ -42,18 +50,30 @@ void app_main(void)
 	// gettimeofday(&time, NULL);
 	// ESP_LOGI("RTC", "RTCInt time: %lld", time);
 	// button_sleep_init();
-	// deepSleep_activate(1000*10000000);		//1000s
+	
+
+	// led_set(2,LED_BLINK_SLOW);
+	// led_set(1,LED_BLINK_FAST);
+	int32_t i32Value;
+	int32_t i32InitValue;
+	// ESP_ERROR_CHECK(ui32HX710_read(&i32InitValue));
 
     while (true)
     {
+		// ESP_ERROR_CHECK(ui32HX710_read(&i32Value));
+		// ESP_LOGI("HX710", "Value: %d", (int)(i32Value - i32InitValue)/ 500);
+		
 		// ui32Charge_read();
+		// ESP_LOGI("FDC", "Capacitance Hum1: %d", (int)FDC_getCap(1)/5243);
+		// ESP_LOGI("FDC", "Capacitance Hum2: %d", (int)FDC_getCap(2)/5243);
+		// ESP_LOGI("FDC", "Capacitance Hum3: %d", (int)FDC_getCap(3)/5243);
     	vTaskDelay(500);
 	
 		// ESP_LOGI("Pump Speed: ", "DATA: %d", (int)gpio_get_level(PIN_PUMP_SPEED));
 		// led_set(2,LED_ON);
 		// ESP_LOGI("Humidity", "Pulse count 1: %d", (int)ui32Humidity_count(0)); // Log the pulse count
 		// ESP_LOGI("Humidity", "Pulse count 2: %d", (int)ui32Humidity_count(1)); // Log the pulse count
-		ESP_LOGI("Touch: ", "DATA: %d", (int)ui32Level_read());
+		// ESP_LOGI("Touch: ", "DATA: %d", (int)ui32Level_read());
 		// vTaskDelay(500);
 		// ESP_LOGI("Pump Speed: ", "DATA: %d", (int)gpio_get_level(PIN_PUMP_SPEED));
 		// led_set(2,LED_OFF);

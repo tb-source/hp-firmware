@@ -17,6 +17,7 @@
 #include "periphery.h"
 #include "peripherie/wifi_time.h"
 #include "log.h"
+#include "ble_miflora.h"
 
 extern void watering_init(void);
 extern deviceData_t eDeviceData_get(void);

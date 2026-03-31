@@ -26,6 +26,8 @@ static const char *TAG = "app";
 #define EXAMPLE_PROV_SEC2_USERNAME          "wifiprov"
 #define EXAMPLE_PROV_SEC2_PWD               "abcd1234"
 
+void bt_prov_reset(void);
+
 static deviceData_t s_peDevice_data;
 
 /* This salt,verifier has been generated for username = "wifiprov" and password = "abcd1234"
@@ -311,7 +313,6 @@ void bt_prov(deviceData_t* peDevice_data)
         wifi_prov_security_t security = WIFI_PROV_SECURITY_2;
         /* The username must be the same one, which has been used in the generation of salt and verifier */
 
-
         /* This pop field represents the password that will be used to generate salt and verifier.
          * The field is present here in order to generate the QR code containing password.
          * In production this password field shall not be stored on the device */
@@ -327,7 +328,6 @@ void bt_prov(deviceData_t* peDevice_data)
 
         ESP_ERROR_CHECK(example_get_sec2_salt(&sec2_params.salt, &sec2_params.salt_len));
         ESP_ERROR_CHECK(example_get_sec2_verifier(&sec2_params.verifier, &sec2_params.verifier_len));
-
         wifi_prov_security2_params_t *sec_params = &sec2_params;
 
         /* What is the service key (could be NULL)
@@ -359,21 +359,17 @@ void bt_prov(deviceData_t* peDevice_data)
          * forgotten to enable the BT stack or BTDM BLE settings in the SDK (e.g. see
          * the sdkconfig.defaults in the example project) */
         wifi_prov_scheme_ble_set_service_uuid(custom_service_uuid);
-
         /* An optional endpoint that applications can create if they expect to
          * get some additional custom data during provisioning workflow.
          * The endpoint name can be anything of your choice.
          * This call must be made before starting the provisioning.
          */
         wifi_prov_mgr_endpoint_create("custom-data");
-
         /* Do not stop and de-init provisioning even after success,
          * so that we can restart it later. */
         wifi_prov_mgr_disable_auto_stop(1000);
-
         /* Start provisioning service */
         ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, (const void *) sec_params, service_name, service_key));
-
         /* The handler for the optional endpoint created above.
          * This call must be made after starting the provisioning, and only if the endpoint
          * has already been created above.
@@ -385,8 +381,10 @@ void bt_prov(deviceData_t* peDevice_data)
          * by the default event loop handler, we don't need to call the following */
         // wifi_prov_mgr_wait();
         // wifi_prov_mgr_deinit();
-
-     } else {
+        ESP_LOGI(TAG, "Provisioning started");
+     } 
+     else 
+     {
         ESP_LOGI(TAG, "Already provisioned, starting Wi-Fi STA");
 
         /* We don't need the manager as device is already provisioned,
@@ -415,7 +413,9 @@ void bt_prov(deviceData_t* peDevice_data)
     }
     led_set(1,LED_OFF);
     ESP_LOGI("PROV", "Disconnect");
-
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    wifi_prov_mgr_deinit();
+    // wifi_prov_mgr_reset_sm_state_for_reprovision(); 
     // xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, true, true, portMAX_DELAY);
     *peDevice_data = s_peDevice_data;
 }
@@ -429,6 +429,6 @@ void bt_prov_reset(void)
 {
     /* Resetting provisioning state machine to enable re-provisioning */
     wifi_prov_mgr_reset_sm_state_for_reprovision();    
-          /* Wait for Wi-Fi connection */
-        xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, true, true, portMAX_DELAY);  
+    /* Wait for Wi-Fi connection */
+    xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, true, true, portMAX_DELAY);  
 }

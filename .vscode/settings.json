@@ -14,12 +14,13 @@
     ],
     "idf.pythonBinPathWin": "c:\\Users\\TBret\\.espressif\\python_env\\idf5.2_py3.11_env\\Scripts\\python.exe",
     "idf.toolsPathWin": "c:\\Users\\TBret\\.espressif",
-    "idf.portWin": "COM4",
+    "idf.portWin": "COM3",
     "idf.flashType": "UART",
     "files.associations": {
         "queue.h": "c",
         "uart.h": "c",
         "esp_log.h": "c"
     },
-    "idf.pythonInstallPath": "c:\\Users\\TBret\\.espressif\\tools\\idf-python\\3.11.2\\python.exe"
+    "idf.pythonInstallPath": "c:\\Users\\TBret\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
+    "idf.currentSetup": "C:\\Users\\TBret\\esp\\v5.2.1\\esp-idf"
 }
