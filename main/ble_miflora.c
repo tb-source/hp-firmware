@@ -31,19 +31,14 @@
  
 
 #include "ble_miflora.h"
+#include "watering.h"
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  KONFIGURATION  –  hier anpassen
  * ═══════════════════════════════════════════════════════════════════════════ */
  
-/**
- * Verbindungsmodus waehlen:
- *   definiert      -> direkte Verbindung per Sensor-Nummer (schnell, ~100 ms)
- *   auskommentiert -> BLE-Scan nach Geraetename (flexibel, findet beliebigen Sensor)
- */
 #define MIFLORA_USE_FIXED_MAC
 
-#ifdef MIFLORA_USE_FIXED_MAC
 /**
  * Sensor-Tabelle: MAC-Adressen aller bekannten Sensoren.
  *
@@ -56,26 +51,6 @@
  *   BLE_ADDR_RANDOM  - falls nRF Connect "Random" anzeigt
  */
 #define MIFLORA_ADDR_TYPE   BLE_ADDR_PUBLIC
- 
-#define MIFLORA_SENSOR_COUNT  3
- 
-static const uint8_t MIFLORA_MAC_TABLE[MIFLORA_SENSOR_COUNT][6] = {
-    /* Sensor 0 */ { 0x5C, 0x85, 0x7E, 0x14, 0x3E, 0x02 },  /* <-- anpassen! */
-    /* Sensor 1 */ { 0x5C, 0x85, 0x7E, 0x14, 0x39, 0xD3 },
-    /* Sensor 2 */ { 0x5C, 0x85, 0x7E, 0x14, 0x37, 0xD3 },
-};
- 
-#else  /* MIFLORA_USE_FIXED_MAC nicht definiert -> Scan-Modus */
- 
-/** Geraetename(n) nach denen beim Scan gesucht wird (Prafix-Vergleich) */
-#define MIFLORA_NAME_PRIMARY    "Flower care"
-#define MIFLORA_NAME_ALT        "ropot"
- 
-/** Scan-Intervall und -Fenster in Millisekunden */
-#define MIFLORA_SCAN_ITVL_MS    80
-#define MIFLORA_SCAN_WIN_MS     40
- 
-#endif /* MIFLORA_USE_FIXED_MAC */
  
 /* ─── Gemeinsame Konstanten ──────────────────────────────────────────────── */
  
@@ -99,9 +74,56 @@ static miflora_phase_t   g_phase      = PHASE_IDLE;
 static uint16_t          g_conn_hdl   = BLE_HS_CONN_HANDLE_NONE;
 static SemaphoreHandle_t g_done_sem   = NULL;
 static volatile bool     g_stack_ready = false; /**< true sobald on_ble_sync gefeuert hat */
-#ifdef MIFLORA_USE_FIXED_MAC
-static uint32_t          g_sensor_idx = 0;   /**< Aktiver Sensor (0-basiert) */
-#endif
+static bool              g_nimble_started = false;
+static bool              g_sensor_enabled[CHANNELCOUNT] = { false, false, false };
+static uint8_t           g_mac_table[CHANNELCOUNT][6] = {};
+
+static bool prv_anySensorEnabled(void)
+{
+    for (uint32_t uiI = 0u; uiI < CHANNELCOUNT; uiI++)
+    {
+        if (g_sensor_enabled[uiI])
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+static bool prv_isMacValid(const uint8_t aui8Mac[6])
+{
+    bool bAnyNonZero = false;
+    bool bAnyNonFF   = false;
+
+    for (uint32_t uiI = 0; uiI < 6u; uiI++)
+    {
+        if (aui8Mac[uiI] != 0u) { bAnyNonZero = true; }
+        if (aui8Mac[uiI] != 0xFFu) { bAnyNonFF = true; }
+    }
+
+    return bAnyNonZero && bAnyNonFF;
+}
+
+void ble_miflora_setChannelData(const deviceData_t *psDevData)
+{
+    if (psDevData == NULL)
+    {
+        return;
+    }
+
+    for (uint32_t uiI = 0u; uiI < CHANNELCOUNT; uiI++)
+    {
+        const channelData_t *psChannel = &psDevData->channels[uiI];
+        g_sensor_enabled[uiI] = psChannel->moisture.senseEnable;
+
+        const uint8_t *pui8Mac = psChannel->moisture.macTable;
+        if (prv_isMacValid(pui8Mac))
+        {
+            memcpy(g_mac_table[uiI], pui8Mac, 6u);
+        }
+    }
+}
  
 /* ═══════════════════════════════════════════════════════════════════════════
  *  HILFSFUNKTIONEN: ROHDATEN PARSEN
@@ -180,6 +202,7 @@ static int on_read_device_info(uint16_t conn_hdl,
                                void *arg);
  
 static int gap_event_handler(struct ble_gap_event *event, void *arg);
+static int sniff_gap_event_handler(struct ble_gap_event *event, void *arg);
  
 /* ═══════════════════════════════════════════════════════════════════════════
  *  GATT-CALLBACKS  (identisch in beiden Modi)
@@ -270,64 +293,6 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
  
-/* ── Nur im Scan-Modus: gefundenes Gerät prüfen ────────────────────────── */
-#ifndef MIFLORA_USE_FIXED_MAC
-    case BLE_GAP_EVENT_DISC: {
-        struct ble_hs_adv_fields fields;
-        int rc = ble_hs_adv_parse_fields(&fields,
-                                         event->disc.data,
-                                         event->disc.length_data);
-        if (rc != 0) break;
- 
-        /* Debug: alle Geraete mit Namen ausgeben */
-        if (fields.name && fields.name_len > 0) {
-            char dbg[32] = {0};
-            memcpy(dbg, fields.name, fields.name_len < 31 ? fields.name_len : 31);
-            ESP_LOGI(TAG, "BLE Geraet: '%s'  RSSI=%d", dbg, event->disc.rssi);
-        }
- 
-        if (!fields.name || fields.name_len == 0) break;
- 
-        bool match =
-            (fields.name_len >= strlen(MIFLORA_NAME_PRIMARY) &&
-             memcmp(fields.name, MIFLORA_NAME_PRIMARY,
-                    strlen(MIFLORA_NAME_PRIMARY)) == 0)
-            ||
-            (fields.name_len >= strlen(MIFLORA_NAME_ALT) &&
-             memcmp(fields.name, MIFLORA_NAME_ALT,
-                    strlen(MIFLORA_NAME_ALT)) == 0);
-        if (!match) break;
- 
-        char name[32] = {0};
-        memcpy(name, fields.name, fields.name_len < 31 ? fields.name_len : 31);
-        ESP_LOGI(TAG, "Mi Flora gefunden: '%s'  RSSI=%d", name, event->disc.rssi);
- 
-        ble_gap_disc_cancel();
-        g_phase = PHASE_CONNECTING;
- 
-        rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC,
-                             &event->disc.addr,
-                             CONNECT_TIMEOUT_MS,
-                             NULL,
-                             gap_event_handler,
-                             NULL);
-        if (rc != 0) {
-            ESP_LOGE(TAG, "ble_gap_connect rc=%d", rc);
-            g_phase = PHASE_ERROR;
-            xSemaphoreGive(g_done_sem);
-        }
-        break;
-    }
- 
-    case BLE_GAP_EVENT_DISC_COMPLETE:
-        if (g_phase == PHASE_SCAN) {
-            ESP_LOGW(TAG, "Scan beendet - kein Mi Flora gefunden");
-            g_phase = PHASE_ERROR;
-            xSemaphoreGive(g_done_sem);
-        }
-        break;
-#endif /* !MIFLORA_USE_FIXED_MAC */
- 
     /* ── Verbindung hergestellt ─────────────────────────────────────────── */
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
@@ -395,7 +360,7 @@ static void on_ble_sync(void)
  *  start_connect  –  Connect oder Scan starten (aus miflora_read_sensor)
  * ═══════════════════════════════════════════════════════════════════════════ */
  
-static esp_err_t start_connect(void)
+static esp_err_t start_connect(uint32_t ui32SensorIdx)
 {
     /* Laufenden Scan abbrechen falls aktiv */
     if (ble_gap_disc_active()) ble_gap_disc_cancel();
@@ -403,13 +368,11 @@ static esp_err_t start_connect(void)
      * miflora_read_sensor() wartet bereits auf DISCONNECT bevor es
      * start_connect() erneut aufruft. */
  
-#ifdef MIFLORA_USE_FIXED_MAC
-    /* ── Modus: feste MAC → direkt verbinden ──────────────────────────── */
-    if (g_sensor_idx >= MIFLORA_SENSOR_COUNT) {
-        ESP_LOGE(TAG, "Ungueltige Sensor-Nummer: %lu", (unsigned long)g_sensor_idx);
+    if (ui32SensorIdx >= CHANNELCOUNT) {
+        ESP_LOGE(TAG, "Ungueltige Sensor-Nummer: %lu", (unsigned long)ui32SensorIdx);
         return ESP_ERR_INVALID_ARG;
     }
-    const uint8_t *mac = MIFLORA_MAC_TABLE[g_sensor_idx];
+    const uint8_t *mac = g_mac_table[ui32SensorIdx];
  
     /* NimBLE speichert MAC in umgekehrter Reihenfolge (little-endian) */
     ble_addr_t peer = { .type = MIFLORA_ADDR_TYPE };
@@ -417,7 +380,7 @@ static esp_err_t start_connect(void)
  
     g_phase = PHASE_CONNECTING;
     ESP_LOGI(TAG, "[FIXED MAC] Sensor %lu | %02X:%02X:%02X:%02X:%02X:%02X ...",
-             (unsigned long)g_sensor_idx,
+             (unsigned long)ui32SensorIdx,
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
  
     int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &peer,
@@ -428,30 +391,6 @@ static esp_err_t start_connect(void)
         g_phase = PHASE_ERROR;
         return ESP_FAIL;
     }
- 
-#else
-    /* ── Modus: Scan nach Geraetename ─────────────────────────────────── */
-    struct ble_gap_disc_params dp = {
-        .itvl              = BLE_GAP_SCAN_ITVL_MS(MIFLORA_SCAN_ITVL_MS),
-        .window            = BLE_GAP_SCAN_WIN_MS(MIFLORA_SCAN_WIN_MS),
-        .filter_policy     = BLE_HCI_SCAN_FILT_NO_WL,
-        .limited           = 0,
-        .passive           = 0,
-        .filter_duplicates = 0,
-    };
- 
-    g_phase = PHASE_SCAN;
-    ESP_LOGI(TAG, "[SCAN] Suche nach '%s' / '%s' ...",
-             MIFLORA_NAME_PRIMARY, MIFLORA_NAME_ALT);
- 
-    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER,
-                          &dp, gap_event_handler, NULL);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_disc rc=%d", rc);
-        g_phase = PHASE_ERROR;
-        return ESP_FAIL;
-    }
-#endif /* MIFLORA_USE_FIXED_MAC */
  
     return ESP_OK;
 }
@@ -482,12 +421,18 @@ static void nimble_host_task(void *param)
  */
 static void miflora_nimble_init(void)
 {
+    if (g_nimble_started)
+    {
+        return;
+    }
+
     ESP_ERROR_CHECK(nimble_port_init());
     ble_hs_cfg.reset_cb        = on_ble_reset;
     ble_hs_cfg.sync_cb         = on_ble_sync;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
     ble_svc_gap_device_name_set("esp32-miflora");
     nimble_port_freertos_init(nimble_host_task);
+    g_nimble_started = true;
 }
  
 /**
@@ -502,6 +447,19 @@ static void miflora_nimble_init(void)
  */
 esp_err_t miflora_nimble_deinit(void)
 {
+    if (!g_nimble_started)
+    {
+        g_stack_ready = false;
+        g_phase = PHASE_IDLE;
+        g_conn_hdl = BLE_HS_CONN_HANDLE_NONE;
+        if (g_done_sem != NULL)
+        {
+            vSemaphoreDelete(g_done_sem);
+            g_done_sem = NULL;
+        }
+        return ESP_OK;
+    }
+
     /* Laufende BLE-Verbindung sauber trennen */
     if (g_conn_hdl != BLE_HS_CONN_HANDLE_NONE) {
         ESP_LOGI(TAG, "Trenne aktive Verbindung (conn_hdl=%d) ...", g_conn_hdl);
@@ -523,7 +481,8 @@ esp_err_t miflora_nimble_deinit(void)
      * Fehler hier nur loggen – deinit trotzdem weiterfuehren. */
     esp_err_t ret = nimble_port_stop();
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "nimble_port_stop: %s (wird ignoriert)", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "nimble_port_stop fehlgeschlagen: %s", esp_err_to_name(ret));
+        return ret;
     } else {
         /* Kurz warten damit der Host-Task sauber beendet wird */
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -545,9 +504,7 @@ esp_err_t miflora_nimble_deinit(void)
     /* Internen Zustand vollstaendig zuruecksetzen */
     g_phase    = PHASE_IDLE;
     g_conn_hdl = BLE_HS_CONN_HANDLE_NONE;
-#ifdef MIFLORA_USE_FIXED_MAC
-    g_sensor_idx = 0;
-#endif
+    g_nimble_started = false;
  
     ESP_LOGI(TAG, "miflora_nimble_deinit abgeschlossen");
     return ESP_OK;
@@ -557,8 +514,7 @@ esp_err_t miflora_nimble_deinit(void)
  * @brief Sensor auslesen - blockiert bis Daten vorliegen oder Timeout.
  *
  * @param[in]  ui32SensorNb Sensor-Nummer (0-basiert).
- *                          Im FIXED-MAC-Modus: Index in MIFLORA_MAC_TABLE.
- *                          Im Scan-Modus:      wird ignoriert (findet ersten Sensor).
+ *                          Index in der konfigurierten MAC-Tabelle.
  * @param[out] out          Zielstruktur fuer Messwerte. Darf nicht NULL sein.
  * @param[in]  timeout_ms   Maximale Wartezeit in Millisekunden.
  * @return ESP_OK, ESP_ERR_INVALID_ARG, ESP_ERR_TIMEOUT oder ESP_FAIL
@@ -566,17 +522,20 @@ esp_err_t miflora_nimble_deinit(void)
 esp_err_t miflora_read_sensor(uint32_t ui32SensorNb, miflora_data_t *out, uint32_t timeout_ms)
 {
     if (!out) return ESP_ERR_INVALID_ARG;
- 
-#ifdef MIFLORA_USE_FIXED_MAC
-    if (ui32SensorNb >= MIFLORA_SENSOR_COUNT) {
+
+    if (ui32SensorNb >= CHANNELCOUNT) {
         ESP_LOGE(TAG, "Sensor-Nummer %lu ungueltig (max %d)",
-                 (unsigned long)ui32SensorNb, MIFLORA_SENSOR_COUNT - 1);
+                 (unsigned long)ui32SensorNb, CHANNELCOUNT - 1);
         return ESP_ERR_INVALID_ARG;
     }
-    g_sensor_idx = ui32SensorNb;
-#else
-    (void)ui32SensorNb;   /* Im Scan-Modus nicht verwendet */
-#endif
+
+    if (!g_sensor_enabled[ui32SensorNb]) {
+        memset(out, 0, sizeof(*out));
+        out->valid = false;
+        ESP_LOGI(TAG, "Sensor %lu deaktiviert (HUM.SENS=false)",
+                 (unsigned long)ui32SensorNb);
+        return ESP_OK;
+    }
  
     memset(&g_data, 0, sizeof(g_data));
  
@@ -599,7 +558,7 @@ esp_err_t miflora_read_sensor(uint32_t ui32SensorNb, miflora_data_t *out, uint32
     g_phase = PHASE_IDLE;
  
     /* Verbindung aufbauen (Scan oder direkt je nach Modus) */
-    esp_err_t conn_err = start_connect();
+    esp_err_t conn_err = start_connect(ui32SensorNb);
     if (conn_err != ESP_OK) {
         return conn_err;
     }
@@ -638,8 +597,20 @@ esp_err_t miflora_read_sensor(uint32_t ui32SensorNb, miflora_data_t *out, uint32
  *  functions
  * ═══════════════════════════════════════════════════════════════════════════ */
  
-void ble_miflora_init(void)
+void ble_miflora_init()
 {
+    //get mac data from deviceData structure
+    ble_miflora_setChannelData(&g_sDeviceData);
+
+    if (!prv_anySensorEnabled())
+    {
+        ESP_LOGI(TAG, "Alle Sensoren deaktiviert, BLE-Stack wird nicht gestartet");
+        g_stack_ready = false;
+        g_phase = PHASE_IDLE;
+        g_conn_hdl = BLE_HS_CONN_HANDLE_NONE;
+        return;
+    }
+
     /* NVS initialisieren */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -650,18 +621,17 @@ void ble_miflora_init(void)
     ESP_ERROR_CHECK(ret);
  
     /* Semaphore anlegen */
-    g_done_sem = xSemaphoreCreateBinary();
-    assert(g_done_sem);
+    if (g_done_sem == NULL)
+    {
+        g_done_sem = xSemaphoreCreateBinary();
+        assert(g_done_sem);
+    }
  
     /* NimBLE initialisieren - on_ble_sync wird automatisch aufgerufen
      * sobald Host und Controller synchronisiert sind */
     miflora_nimble_init();
- 
-    #ifdef MIFLORA_USE_FIXED_MAC
-        ESP_LOGI(TAG, "Modus: FIXED MAC");
-    #else
-        ESP_LOGI(TAG, "Modus: SCAN nach Geraetename");
-    #endif
+
+    ESP_LOGI(TAG, "Modus: FIXED MAC");
 }
 
 esp_err_t ble_miflora_deinit(void)
@@ -671,14 +641,122 @@ esp_err_t ble_miflora_deinit(void)
 
 void ble_miflora_read(uint32_t ui32SensorNb, miflora_data_t *out)
 {
-    /* 4. Sensor auslesen – erster Versuch */
+    /* Sensor auslesen – erster Versuch */
     esp_err_t err = miflora_read_sensor(ui32SensorNb, out, 5000);
  
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Initialer Read erfolgreich");
+        if (out != NULL && out->valid) {
+            ESP_LOGI(TAG, "Initialer Read erfolgreich");
+        } else {
+            ESP_LOGI(TAG, "Read uebersprungen oder keine gueltigen Daten (Sensor %lu)",
+                     (unsigned long)ui32SensorNb);
+        }
         /* Weiterverarbeitung: MQTT, Display, NVS speichern … */
     } else {
         ESP_LOGE(TAG, "Initialer Read fehlgeschlagen: %s",
                  esp_err_to_name(err));
     }
+}
+
+static int sniff_gap_event_handler(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+
+    char acName[32] = {0};
+
+    if (event->type == BLE_GAP_EVENT_DISC)
+    {
+        const uint8_t *pui8Data = event->disc.data;
+        uint8_t uiLen = event->disc.length_data;
+
+        while (uiLen > 1u)
+        {
+            uint8_t uiFieldLen = pui8Data[0];
+            if (uiFieldLen == 0u || (uint16_t)uiFieldLen + 1u > uiLen) { break; }
+
+            uint8_t uiFieldType = pui8Data[1];
+            if ((uiFieldType == 0x09u || uiFieldType == 0x08u) && uiFieldLen > 1u)
+            {
+                size_t uiNameLen = (size_t)(uiFieldLen - 1u);
+                if (uiNameLen >= sizeof(acName)) { uiNameLen = sizeof(acName) - 1u; }
+                memcpy(acName, &pui8Data[2], uiNameLen);
+                acName[uiNameLen] = '\0';
+                break;
+            }
+
+            pui8Data += (uint16_t)uiFieldLen + 1u;
+            uiLen -= (uint16_t)uiFieldLen + 1u;
+        }
+    }
+
+    switch (event->type)
+    {
+    case BLE_GAP_EVENT_DISC:
+        ESP_LOGI(TAG,
+                 "BLE_SNIFF,%02X:%02X:%02X:%02X:%02X:%02X,rssi=%d,type=%u,len=%u,name=%s",
+                 event->disc.addr.val[5], event->disc.addr.val[4],
+                 event->disc.addr.val[3], event->disc.addr.val[2],
+                 event->disc.addr.val[1], event->disc.addr.val[0],
+                 event->disc.rssi,
+                 (unsigned)event->disc.addr.type,
+                 (unsigned)event->disc.length_data,
+                 acName[0] != '\0' ? acName : "-");
+        break;
+
+    case BLE_GAP_EVENT_DISC_COMPLETE:
+        ESP_LOGI(TAG, "BLE_SNIFF,DONE,status=%d", event->disc_complete.reason);
+        xSemaphoreGive(g_done_sem);
+        break;
+
+    default:
+        break;
+    }
+
+    return 0;
+}
+
+esp_err_t ble_miflora_sniff(uint32_t ui32DurationMs)
+{
+    if (ui32DurationMs == 0u) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint32_t uiWaitMs = 0u;
+    while (!g_stack_ready && uiWaitMs < 5000u) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        uiWaitMs += 50u;
+    }
+    if (!g_stack_ready) {
+        ESP_LOGE(TAG, "BLE-Stack nicht bereit nach %lu ms", (unsigned long)uiWaitMs);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (ble_gap_disc_active()) {
+        ble_gap_disc_cancel();
+    }
+
+    xSemaphoreTake(g_done_sem, 0);
+
+    struct ble_gap_disc_params sDiscParams = {0};
+    sDiscParams.passive = 0;
+    sDiscParams.filter_duplicates = 1;
+
+    ESP_LOGI(TAG, "BLE_SNIFF,START,duration_ms=%lu", (unsigned long)ui32DurationMs);
+    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC,
+                          (int32_t)ui32DurationMs,
+                          &sDiscParams,
+                          sniff_gap_event_handler,
+                          NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_disc rc=%d", rc);
+        return ESP_FAIL;
+    }
+
+    if (xSemaphoreTake(g_done_sem, pdMS_TO_TICKS(ui32DurationMs + 2000u)) == pdFALSE) {
+        ble_gap_disc_cancel();
+        ESP_LOGW(TAG, "BLE_SNIFF,TIMEOUT");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    return ESP_OK;
 }

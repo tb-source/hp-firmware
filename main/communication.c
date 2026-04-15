@@ -6,6 +6,7 @@
  */
 
 #include "communication.h"
+#include <stdlib.h>
 
 #define BUF_SIZE (1024)
 static QueueHandle_t uart0_queue;
@@ -41,6 +42,9 @@ static void uart_event_task(void *pvParameters)
     uart_event_t event;
     size_t buffered_size;
     uint8_t* dtmp = (uint8_t*) malloc(BUF_SIZE);
+    static char acDollarCmd[BT_VERIFIER_LEN * 2u + 64u];
+    static size_t uiDollarLen = 0u;
+    static bool bDollarInProgress = false;
     for(;;) {
         if(xQueueReceive(uart0_queue, (void * )&event, portMAX_DELAY))         //Waiting for UART event.
         {
@@ -56,7 +60,54 @@ static void uart_event_task(void *pvParameters)
                     uart_read_bytes(UART_NUM_0, dtmp, event.size, portMAX_DELAY);
 //                    ESP_LOGI(TAG, "[DATA EVT]:");
                     uart_write_bytes(UART_NUM_0, (const char*) dtmp, event.size);
-                    testFunction(dtmp);
+
+                    if (bDollarInProgress || (event.size > 0 && dtmp[0] == '$'))
+                    {
+                        for (size_t uiI = 0u; uiI < event.size; uiI++)
+                        {
+                            char cByte = (char)dtmp[uiI];
+
+                            if (!bDollarInProgress)
+                            {
+                                if (cByte == '$')
+                                {
+                                    bDollarInProgress = true;
+                                    uiDollarLen = 0u;
+                                    acDollarCmd[uiDollarLen++] = cByte;
+                                }
+                                continue;
+                            }
+
+                            if (cByte == '\r')
+                            {
+                                continue;
+                            }
+
+                            if (cByte == '\n')
+                            {
+                                acDollarCmd[uiDollarLen] = '\0';
+                                testFunction((uint8_t *)acDollarCmd);
+                                bDollarInProgress = false;
+                                uiDollarLen = 0u;
+                                continue;
+                            }
+
+                            if (uiDollarLen < (sizeof(acDollarCmd) - 1u))
+                            {
+                                acDollarCmd[uiDollarLen++] = cByte;
+                            }
+                            else
+                            {
+                                ESP_LOGE(TAG, "$ command overflow, dropping frame");
+                                bDollarInProgress = false;
+                                uiDollarLen = 0u;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        testFunction(dtmp);
+                    }
                     break;
                 //Event of HW FIFO overflow detected
                 case UART_FIFO_OVF:
@@ -105,8 +156,257 @@ static void uart_event_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
+/* =========================================================================
+ * $ Protocol Handler
+ * Format: $<id>><value>  (Set)
+ *         $<id><         (Get)
+ * Response Set: <id>OK\n  |  <id>ERR\n
+ * Response Get: <id>OK:<value>\n  |  <id>ERR\n
+ * ========================================================================= */
+
+static void prv_uartSend(const char *pacStr)
+{
+    uart_write_bytes(UART_NUM_0, pacStr, strlen(pacStr));
+}
+
+static void prv_hexEncode(const uint8_t *pui8Data, size_t uiLen, char *pacOut, size_t uiOutSize)
+{
+    static const char acHex[] = "0123456789abcdef";
+    size_t uiI;
+    for (uiI = 0; uiI < uiLen && (uiI * 2u + 2u) < uiOutSize; uiI++)
+    {
+        pacOut[uiI * 2u]      = acHex[(pui8Data[uiI] >> 4) & 0x0Fu];
+        pacOut[uiI * 2u + 1u] = acHex[pui8Data[uiI] & 0x0Fu];
+    }
+    pacOut[uiI * 2u] = '\0';
+}
+
+static bool prv_hexDecode(const char *pacHex, uint8_t *pui8Out, size_t uiExpected)
+{
+    for (size_t uiI = 0u; uiI < uiExpected; uiI++)
+    {
+        char cH = pacHex[uiI * 2u];
+        char cL = pacHex[uiI * 2u + 1u];
+        if (cH == '\0' || cL == '\0') { return false; }
+        uint8_t uiHi = (cH >= '0' && cH <= '9') ? (uint8_t)(cH - '0') :
+                       (cH >= 'a' && cH <= 'f') ? (uint8_t)(cH - 'a' + 10) :
+                       (cH >= 'A' && cH <= 'F') ? (uint8_t)(cH - 'A' + 10) : 0xFFu;
+        uint8_t uiLo = (cL >= '0' && cL <= '9') ? (uint8_t)(cL - '0') :
+                       (cL >= 'a' && cL <= 'f') ? (uint8_t)(cL - 'a' + 10) :
+                       (cL >= 'A' && cL <= 'F') ? (uint8_t)(cL - 'A' + 10) : 0xFFu;
+        if (uiHi == 0xFFu || uiLo == 0xFFu) { return false; }
+        pui8Out[uiI] = (uint8_t)((uiHi << 4) | uiLo);
+    }
+    return true;
+}
+
+static void prv_handleDollarCmd(const uint8_t *pucData)
+{
+    const char *pacCmd = (const char *)(pucData + 1);  /* skip '$' */
+    size_t      uiLen  = strlen(pacCmd);
+
+    /* find direction marker */
+    size_t uiDirIdx = 0u;
+    char   cDir     = 0;
+    for (size_t uiI = 0u; uiI < uiLen; uiI++)
+    {
+        if (pacCmd[uiI] == '>' || pacCmd[uiI] == '<')
+        {
+            uiDirIdx = uiI;
+            cDir     = pacCmd[uiI];
+            break;
+        }
+    }
+    if (cDir == 0) { return; }
+
+    /* extract identifier */
+    char acId[32];
+    if (uiDirIdx >= sizeof(acId)) { return; }
+    memcpy(acId, pacCmd, uiDirIdx);
+    acId[uiDirIdx] = '\0';
+
+    /* extract value (Set only), strip \r\n */
+    char acValue[BT_VERIFIER_LEN * 2u + 1u];
+    acValue[0] = '\0';
+    if (cDir == '>')
+    {
+        const char *pacVal = pacCmd + uiDirIdx + 1u;
+        size_t      uiVLen = strnlen(pacVal, uiLen - uiDirIdx - 1u);
+        while (uiVLen > 0u && (pacVal[uiVLen - 1u] == '\r' || pacVal[uiVLen - 1u] == '\n'))
+        {
+            uiVLen--;
+        }
+        if (uiVLen >= sizeof(acValue)) { uiVLen = sizeof(acValue) - 1u; }
+        memcpy(acValue, pacVal, uiVLen);
+        acValue[uiVLen] = '\0';
+    }
+
+    char acResp[128];
+
+    /* --- selPos --- */
+    if (strncmp(acId, "selPos", 6u) == 0)
+    {
+        if (cDir == '>')
+        {
+            char *pcEndChannel = NULL;
+            char *pcEndAngle = NULL;
+            unsigned long ulChannel = strtoul(acId + 6u, &pcEndChannel, 10);
+            unsigned long ulAngle = strtoul(acValue, &pcEndAngle, 10);
+            bool bOk = false;
+
+            if (acId[6] != '\0' && pcEndChannel != NULL && *pcEndChannel == '\0' &&
+                pcEndAngle != NULL && *pcEndAngle == '\0' && ulChannel < 4UL)
+            {
+                bOk = (storage_writeSelectorProperty((uint32_t)ulChannel, (uint32_t)ulAngle) == ESP_OK);
+            }
+            prv_uartSend(bOk ? "selPosOK\n" : "selPosERR\n");
+        }
+        else
+        {
+            sel_prop_t sSelProp;
+            memset(&sSelProp, 0, sizeof(sSelProp));
+
+            esp_err_t eErr = storage_readSelectorProperty(&sSelProp);
+            if (eErr == ESP_OK || eErr == ESP_ERR_NVS_NOT_FOUND)
+            {
+                snprintf(acResp, sizeof(acResp), "selPosOK:%lu,%lu,%lu,%lu\n",
+                         (unsigned long)sSelProp.ui32Angle[0],
+                         (unsigned long)sSelProp.ui32Angle[1],
+                         (unsigned long)sSelProp.ui32Angle[2],
+                         (unsigned long)sSelProp.ui32Angle[3]);
+                prv_uartSend(acResp);
+            }
+            else
+            {
+                prv_uartSend("selPosERR\n");
+            }
+        }
+        return;
+    }
+
+    /* --- devID --- */
+    if (strcmp(acId, "devID") == 0)
+    {
+        credentials_t sCred;
+        memset(&sCred, 0, sizeof(sCred));
+        storage_readCredentials(&sCred);
+        if (cDir == '>')
+        {
+            strncpy(sCred.deviceId, acValue, sizeof(sCred.deviceId) - 1u);
+            bool bOk = (storage_writeCredentials(&sCred) == ESP_OK);
+            prv_uartSend(bOk ? "devIDOK\n" : "devIDERR\n");
+        }
+        else
+        {
+            snprintf(acResp, sizeof(acResp), "devIDOK:%s\n", sCred.deviceId);
+            prv_uartSend(acResp);
+        }
+        return;
+    }
+
+    /* --- wifiSsid / wifiPw / fbEmail / fbPw --- */
+    if (strcmp(acId, "wifiSsid") == 0 || strcmp(acId, "wifiPw")  == 0 ||
+        strcmp(acId, "fbEmail")  == 0 || strcmp(acId, "fbPw")    == 0)
+    {
+        credentials_t sCred;
+        memset(&sCred, 0, sizeof(sCred));
+        storage_readCredentials(&sCred);   /* read current values first (ignore error) */
+
+        if (cDir == '>')
+        {
+            if      (strcmp(acId, "wifiSsid") == 0) { strncpy(sCred.wifiSsid,         acValue, sizeof(sCred.wifiSsid) - 1u); }
+            else if (strcmp(acId, "wifiPw")   == 0) { strncpy(sCred.wifiPassword,     acValue, sizeof(sCred.wifiPassword) - 1u); }
+            else if (strcmp(acId, "fbEmail")  == 0) { strncpy(sCred.firebaseEmail,    acValue, sizeof(sCred.firebaseEmail) - 1u); }
+            else                                    { strncpy(sCred.firebasePassword, acValue, sizeof(sCred.firebasePassword) - 1u); }
+            bool bOk = (storage_writeCredentials(&sCred) == ESP_OK);
+            snprintf(acResp, sizeof(acResp), "%s%s\n", acId, bOk ? "OK" : "ERR");
+        }
+        else
+        {
+            const char *pacFieldVal = "";
+            if      (strcmp(acId, "wifiSsid") == 0) { pacFieldVal = sCred.wifiSsid; }
+            else if (strcmp(acId, "wifiPw")   == 0) { pacFieldVal = sCred.wifiPassword; }
+            else if (strcmp(acId, "fbEmail")  == 0) { pacFieldVal = sCred.firebaseEmail; }
+            else                                    { pacFieldVal = sCred.firebasePassword; }
+            snprintf(acResp, sizeof(acResp), "%sOK:%s\n", acId, pacFieldVal);
+        }
+        prv_uartSend(acResp);
+        return;
+    }
+
+    /* --- btSalt --- */
+    if (strcmp(acId, "btSalt") == 0)
+    {
+        uint8_t aui8Salt[BT_SALT_LEN];
+
+        if (cDir == '>')
+        {
+            if (!prv_hexDecode(acValue, aui8Salt, BT_SALT_LEN))
+            {
+                prv_uartSend("btSaltERR\n");
+            }
+            else
+            {
+                bool bOk = (storage_writeBtSalt(aui8Salt, BT_SALT_LEN) == ESP_OK);
+                prv_uartSend(bOk ? "btSaltOK\n" : "btSaltERR\n");
+            }
+        }
+        else
+        {
+            if (storage_readBtSalt(aui8Salt, BT_SALT_LEN) == ESP_OK)
+            {
+                char acHex[BT_SALT_LEN * 2u + 1u];
+                prv_hexEncode(aui8Salt, BT_SALT_LEN, acHex, sizeof(acHex));
+                snprintf(acResp, sizeof(acResp), "btSaltOK:%s\n", acHex);
+                prv_uartSend(acResp);
+            }
+            else { prv_uartSend("btSaltERR\n"); }
+        }
+        return;
+    }
+
+    /* --- btVerifi --- */
+    if (strcmp(acId, "btVerifi") == 0)
+    {
+        uint8_t *pui8Ver = (uint8_t *)malloc(BT_VERIFIER_LEN);
+        if (pui8Ver == NULL) { prv_uartSend("btVerifiERR\n"); return; }
+
+        if (cDir == '>')
+        {
+            if (!prv_hexDecode(acValue, pui8Ver, BT_VERIFIER_LEN))
+            {
+                prv_uartSend("btVerifiERR\n");
+            }
+            else
+            {
+                bool bOk = (storage_writeBtVerifier(pui8Ver, BT_VERIFIER_LEN) == ESP_OK);
+                prv_uartSend(bOk ? "btVerifiOK\n" : "btVerifiERR\n");
+            }
+        }
+        else
+        {
+            if (storage_readBtVerifier(pui8Ver, BT_VERIFIER_LEN) == ESP_OK)
+            {
+                char acHex[BT_VERIFIER_LEN * 2u + 1u];
+                prv_hexEncode(pui8Ver, BT_VERIFIER_LEN, acHex, sizeof(acHex));
+                prv_uartSend("btVerifiOK:");
+                prv_uartSend(acHex);
+                prv_uartSend("\n");
+            }
+            else { prv_uartSend("btVerifiERR\n"); }
+        }
+        free(pui8Ver);
+        return;
+    }
+}
+
 void testFunction(uint8_t* pacData)
 {
+	if (*pacData == '$')
+	{
+		prv_handleDollarCmd(pacData);
+		return;
+	}
 	//LED test
 	switch (*pacData)
 	{
@@ -139,7 +439,8 @@ void testFunction(uint8_t* pacData)
 
 		case 'p':
 		{
-	        log_peripherieData();
+            miflora_data_t paFloraData[3];
+	        log_peripherieData(paFloraData);
 		}
 		break;
 

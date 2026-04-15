@@ -5,28 +5,34 @@
 #include "peripherie/iic.h"
 #include "peripherie/tca6408.h"
 #include "ble_miflora.h"
+#include "storage.h"
+#include "helper.h"
+#include "firestore.h"
 #include "log.h"
+#include "datamanagement.h"
 
 void app_main(void)
 {
-	ESP_LOGE("NVS", "%s", esp_err_to_name(storage_init()));	
-
+	ESP_LOGE("NVS", "%s", esp_err_to_name(storage_init()));
 	led_init();
 	adcTouch_init();
 	uart_init();
 	i2c_init();	
-	bPowerstage_init();	
+	bPowerstage_init();
 
 	// humidity_init();
 	// touch_init1();
 
-	// watering_init();
+	watering_init();
 
-  	RTCExt_getUnixTime();        //uncommented
-	log_peripherieData();
-	deepSleep_activate(1000000*60*20);		//log every 20 min data
+  	// RTCExt_getUnixTime();        //uncommented
+	// log_peripherieData();
+	// deepSleep_activate(1000000*60*20);		//log every 20 min data
 
-
+	// ble_miflora_init();
+	// ble_miflora_sniff(5000);		//sniff for 10s
+	// ble_miflora_deinit();
+	
 
 
 	// WakeUpCause_test();

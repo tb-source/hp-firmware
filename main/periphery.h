@@ -28,7 +28,6 @@
 #include "rom/ets_sys.h"
 
 #define SmaWaS_HPSWC1_V01 // pinout of board
-#define DEVICE_NUMBER 2// device number
 
 enum
 {
@@ -71,6 +70,7 @@ typedef enum
   LED_BLINK_SLOW = 2,
   LED_BLINK_FAST = 3,
 } led_status_t;
+
 
 typedef struct
 {
@@ -134,8 +134,9 @@ static const gpio_num_t PIN_HS = GPIO_NUM_18;
 static const gpio_num_t PIN_ADCMUX1 = GPIO_NUM_15; // MUX selection 1 ... 3
 static const gpio_num_t PIN_ADCMUX2 = GPIO_NUM_13;
 static const gpio_num_t PIN_ADCMUX3 = GPIO_NUM_14;
-static const gpio_num_t PIN_HX710_OUT = GPIO_NUM_26;
-static const gpio_num_t PIN_HX710_SCK = GPIO_NUM_27;
+// static const gpio_num_t PIN_HX710_OUT = GPIO_NUM_26;
+// static const gpio_num_t PIN_HX710_SCK = GPIO_NUM_27;
+static const gpio_num_t PIN_AHT20_EN = GPIO_NUM_27; // power pin for AHT20
 
 static const adc1_channel_t PIN_ADC_MUX = ADC1_CHANNEL_6; // Analog mux signal
 static const gpio_num_t PIN_PWM_MUX = GPIO_NUM_23;        // pwm mux signal

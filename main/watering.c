@@ -7,9 +7,10 @@
 
 #include "watering.h"
 
-static deviceData_t deviceData;
+deviceData_t g_sDeviceData;
 static deviceData_t deviceDataOld;
 static wateringData_t s_eWateringData;
+RTC_DATA_ATTR static time_t s_tLastServerUpdateUnix = 0;
 
 const char * jsonData = "{\"device\":{\"id\":12345,\"name\":\"DeviceName\",\"status\":\"active\",\"battery\":45,\"temperature\":25.5,\"channels\":[{\"id\":1,\"name\":\"Channel 1\",\"description\":\"This is Channel 1\",\"enable\":true,\"duration\":10,\"frequency\":-3,\"events\":[{\"time\":20,\"amount\":20},{\"time\":2,\"amount\":30},{\"time\":5,\"amount\":25}]},{\"id\":2,\"name\":\"Channel 2\",\"description\":\"This is Channel 2\",\"enable\":true,\"duration\":15,\"frequency\":-3,\"events\":[{\"time\":22,\"amount\":10},{\"time\":6,\"amount\":15},{\"time\":12,\"amount\":20}]}]}}";
 const char * jsonDataOld = "{\"device\":{\"id\":12345,\"name\":\"DeviceName\",\"status\":\"active\",\"battery\":45,\"temperature\":25.5,\"channels\":[{\"id\":1,\"name\":\"Channel 1\",\"description\":\"This is Channel 1\",\"enable\":true,\"duration\":10,\"frequency\":-2,\"events\":[{\"time\":22,\"amount\":20},{\"time\":5,\"amount\":25}]},{\"id\":2,\"name\":\"Channel 2\",\"description\":\"This is Channel 2\",\"enable\":false,\"duration\":15,\"frequency\":-3,\"events\":[{\"time\":22,\"amount\":10},{\"time\":6,\"amount\":15},{\"time\":12,\"amount\":20}]}]}}";
@@ -21,6 +22,8 @@ void wateringTimeFirst(eventData_t * wateringData, wateringTime_t* wateringTime,
 void wateringTimeRecalc(eventData_t * wateringData, wateringTime_t* wateringTime, time_t actTime);
 time_t setTimeToNextEvent(wateringData_t* wateringData);
 esp_err_t erWatering(wateringData_t* wateringData);
+esp_err_t erWateringMoisture(wateringData_t* wateringData, deviceData_t* channels);
+esp_err_t erUpdateServerData(deviceData_t* psDeviceData);
 
 void watering_init(void)
 {
@@ -29,7 +32,7 @@ void watering_init(void)
 }
 
 deviceData_t eDeviceData_get(void){
-    return deviceData;
+    return g_sDeviceData;
 }
 
 void button_task(void)
@@ -37,13 +40,13 @@ void button_task(void)
     //uncomment for normal operaption - only for demo purposes
     led_set(1,LED_ON);
     char *data = (char*) malloc(4000*sizeof(char));
-    ESP_LOGI("BTN_START", "Read dev storage data: %s", esp_err_to_name(device_read(data)));
-    data_convert_read(&deviceData, data);    
-    ESP_LOGI("BTN_START", "Read wat storage data: %s", esp_err_to_name(nvs_readWatering(&s_eWateringData)));
+    ESP_LOGI("BTN_START", "Read dev storage data: %s", esp_err_to_name(storage_readDeviceJson(data)));
+    data_convert_read(&g_sDeviceData, data);    
+    ESP_LOGI("BTN_START", "Read wat storage data: %s", esp_err_to_name(storage_readWatering(&s_eWateringData)));
     //check watering data vs device data and repair if corrupted
     wateringData2deviceData(&deviceDataOld, &s_eWateringData);
-    setWateringTime(&deviceData, &deviceDataOld, &s_eWateringData);
-    ESP_LOGI("JSON", "Write wat storage data: %s", esp_err_to_name(nvs_writeWatering(&s_eWateringData)));
+    setWateringTime(&g_sDeviceData, &deviceDataOld, &s_eWateringData);
+    ESP_LOGI("JSON", "Write wat storage data: %s", esp_err_to_name(storage_writeWatering(&s_eWateringData)));
 
     // ESP_LOGI("JSON", "Read data: %s",data);   
     free(data);
@@ -72,12 +75,12 @@ void button_task(void)
             // led_switch(1, 0);
             //RTCExt_setTime();
 
-            deviceData_t deviceDataOld = deviceData;     
-            deviceData.battery = ui32BattVolt_read();
-            deviceData.temperature = (uint32_t)fTemp_read()*10;
+            deviceData_t deviceDataOld = g_sDeviceData;     
+            g_sDeviceData.battery = ui32BattVolt_read();
+            g_sDeviceData.temperature = (uint32_t)fTemp_read()*10;
 
             ESP_LOGI("BTN_SHORT", "Start BT Provisioning");
-            bt_prov(&deviceData); 
+            bt_prov(&g_sDeviceData); 
 
             //demo mode
             // selector_setPos(1);
@@ -90,9 +93,9 @@ void button_task(void)
             //set unix time
             RTCExt_setUnixTime();
             // save data if changed - actual static data save
-            setWateringTime(&deviceData, &deviceDataOld, &s_eWateringData);
-            ESP_LOGI("BTN_SHORT", "Write dev storage data: %s", esp_err_to_name(device_write(data_convert_write(deviceData))));
-            ESP_LOGI("JSON", "Write wat storage data: %s", esp_err_to_name(nvs_writeWatering(&s_eWateringData)));
+            setWateringTime(&g_sDeviceData, &deviceDataOld, &s_eWateringData);
+            ESP_LOGI("BTN_SHORT", "Write dev storage data: %s", esp_err_to_name(storage_writeDeviceJson(data_convert_write(g_sDeviceData))));
+            ESP_LOGI("JSON", "Write wat storage data: %s", esp_err_to_name(storage_writeWatering(&s_eWateringData)));
             deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - 100s  100000000              
 		}
         break;
@@ -119,15 +122,42 @@ void button_task(void)
 
  	case WAKEUP_TIMER:
 		{
-            led_set(1,LED_ON);                       
-            //watering event
-            led_set(1,LED_ON);
-            erWatering(&s_eWateringData);
+            led_set(1,LED_ON);     
+
+            //time based watering event 
+            // erWatering(&s_eWateringData);
+            // deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - 100s   
+
+            //moisture based watering event
+            //update data sync with server every 4h
+            static const time_t sc_tServerUpdateIntervalUnix = 4 * 60 * 60;       //4h in s -> 4 * 60 * 60
+            time_t tTimeAct;
+            time(&tTimeAct);
+            if ((s_tLastServerUpdateUnix == 0) || ((tTimeAct - s_tLastServerUpdateUnix) >= sc_tServerUpdateIntervalUnix))
+            {
+                deviceData_t sDeviceDataOld = g_sDeviceData;
+                ESP_LOGI("FSTR", "Starte Server-Update, letztes Update: %lld", (long long)s_tLastServerUpdateUnix);
+                erUpdateServerData(&g_sDeviceData);
+                //new data arrived
+                if(memcmp(&g_sDeviceData, &sDeviceDataOld, sizeof(deviceData_t)) != 0)
+                {
+                    ESP_LOGI("FSTR", "Server-Update: neue Daten empfangen");        //save data
+                    setWateringTime(&g_sDeviceData, &sDeviceDataOld, &s_eWateringData);
+                    ESP_LOGI("BTN_SHORT", "Write dev storage data: %s", esp_err_to_name(storage_writeDeviceJson(data_convert_write(g_sDeviceData))));
+                    ESP_LOGI("JSON", "Write wat storage data: %s", esp_err_to_name(storage_writeWatering(&s_eWateringData)));
+                }
+                ESP_LOGI("WAKE_TIMER", "Compare memory: %d", memcmp(&g_sDeviceData, &sDeviceDataOld, sizeof(deviceData_t)));   
+
+                s_tLastServerUpdateUnix = tTimeAct;
+
+            }
+
+            erWateringMoisture(&s_eWateringData, &g_sDeviceData);  //watering
+	        deepSleep_activate(20*60*1000000);		//log every 20 min data  
             led_set(1,LED_OFF);
             //proof watering data changed
       
-            //go sleeping
-            deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - 100s   
+            
 		}
         break;    
 
@@ -135,7 +165,8 @@ void button_task(void)
         {
             led_set(1,LED_OFF);
             //go sleeping
-            deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - 100s  
+            // deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - 100s  
+            deepSleep_activate(10 * 1000000);  //in µs - 10s  
         }
         break;
 
@@ -149,7 +180,8 @@ void button_task(void)
 
     default:
         //check wakeup time and go sleep
-        deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - time to next event   
+        deepSleep_activate(10 * 1000000);  //in µs - 10s  
+        // deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - time to next event   
         break;
     }
     vTaskDelay(250);        
@@ -203,7 +235,8 @@ void setWateringTime(deviceData_t * deviceData, deviceData_t * deviceDataOld, wa
                 }
 
                 //watering time changed
-                if((*deviceData).channels[i32ChanelCount].events[i32EventCount].time != (*deviceDataOld).channels[i32ChanelCount].events[i32EventCount].time)
+                if(((*deviceData).channels[i32ChanelCount].events[i32EventCount].hour != (*deviceDataOld).channels[i32ChanelCount].events[i32EventCount].hour) ||
+                   ((*deviceData).channels[i32ChanelCount].events[i32EventCount].minute != (*deviceDataOld).channels[i32ChanelCount].events[i32EventCount].minute))
                 {
                     ESP_LOGI("Time: ", "Watering time changed");
                     //recalc watering event
@@ -328,15 +361,14 @@ void wateringData2deviceData(deviceData_t * deviceData,  wateringData_t* waterin
                     {
     	                (*deviceData).channels[i32ChanelCount].frequency = 0;
                     }
-                    
-                                      
                 }  
                 //set time
                 struct tm tmWatTime;        //act tm time
                 localtime_r(&((*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringNextUnix), &tmWatTime);
-                (*deviceData).channels[i32ChanelCount].events[i32EventCount].time = tmWatTime.tm_hour; 
+                // (*deviceData).channels[i32ChanelCount].events[i32EventCount].hour = tmWatTime.tm_hour;      //not sure if this is correct - maybe better to save hour and minute in watering data struct
+                // (*deviceData).channels[i32ChanelCount].events[i32EventCount].minute = tmWatTime.tm_min;
                 ESP_LOGI("wateringData2deviceData: ", "wateringNext: %lld",(*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringNextUnix);
-                ESP_LOGI("wateringData2deviceData: ", "channel: %ld event: %ld time: %ld amount: %ld", i32ChanelCount, i32EventCount,(*deviceData).channels[i32ChanelCount].events[i32EventCount].time,(*deviceData).channels[i32ChanelCount].events[i32EventCount].amount);
+                ESP_LOGI("wateringData2deviceData: ", "channel: %ld event: %ld time: %ld:%ld amount: %ldml", i32ChanelCount, i32EventCount,(*deviceData).channels[i32ChanelCount].events[i32EventCount].hour, (*deviceData).channels[i32ChanelCount].events[i32EventCount].minute, (*deviceData).channels[i32ChanelCount].events[i32EventCount].amount);
             }
             (*deviceData).channels[i32ChanelCount].enable = bChannelEnable;
             ESP_LOGI("wateringData2deviceData: ", "channel: %ld frquency: %ld Enable: %s", i32ChanelCount,(*deviceData).channels[i32ChanelCount].frequency,(*deviceData).channels[i32ChanelCount].enable?"true":"false");
@@ -352,12 +384,12 @@ void wateringTimeFirst(eventData_t * wateringData, wateringTime_t* wateringTime,
 
     struct tm tmFirstWatering = tmTimeAct;
     tmFirstWatering.tm_sec = 0;
-    tmFirstWatering.tm_min = 0;
-    tmFirstWatering.tm_hour = (*wateringData).time;
+    tmFirstWatering.tm_min = (*wateringData).minute;
+    tmFirstWatering.tm_hour = (*wateringData).hour;
     (*wateringTime).wateringNextUnix = mktime(&tmFirstWatering);
     // ESP_LOGI("wateringTimeFirst: ","wateringNextUnix: %lld ", (*wateringTime).wateringNextUnix);
     ESP_LOGI("wateringTimeFirst: ","WateringTime h: %d - timeAct h: %d ", tmFirstWatering.tm_hour, tmTimeAct.tm_hour);
-    if (tmTimeAct.tm_hour >= (*wateringData).time) (*wateringTime).wateringNextUnix +=  60*60*24;              //first watering event tomorrow / plus one day
+    if (tmTimeAct.tm_hour >= (*wateringData).hour) (*wateringTime).wateringNextUnix +=  60*60*24;              //first watering event tomorrow / plus one day
     // ESP_LOGI("wateringTimeFirst: ","wateringNextUnix: %lld ", (*wateringTime).wateringNextUnix);
 }
 
@@ -372,8 +404,8 @@ void wateringTimeRecalc(eventData_t * wateringData, wateringTime_t* wateringTime
         localtime_r(&actTime, &tmTimeAct);
 
         tmTimeAct.tm_sec = 0;
-        tmTimeAct.tm_min = 0;
-        tmTimeAct.tm_hour = (*wateringData).time;
+        tmTimeAct.tm_min = (*wateringData).minute;
+        tmTimeAct.tm_hour = (*wateringData).hour;
         tWateringNext = mktime(&tmTimeAct) + (60*60*24);   //watering next day     
     }
     (*wateringTime).wateringNextUnix = tWateringNext;
@@ -417,7 +449,7 @@ time_t setTimeToNextEvent(wateringData_t* wateringData)
         //sleep one day
         ESP_LOGI("setTimeToNextEvent: ","Next watering in 1day");
         (*wateringData).wateringNextUnix = tTimeAct + (60*60*24);
-        ESP_LOGI("setTimeToNextEvent", "Write wat storage data: %s", esp_err_to_name(nvs_writeWatering(&s_eWateringData)));  
+        ESP_LOGI("setTimeToNextEvent", "Write wat storage data: %s", esp_err_to_name(storage_writeWatering(&s_eWateringData)));  
         return 60*20; //log every 20 min data 
         //return 60*60*24;   //wait 1 day
     }
@@ -427,7 +459,7 @@ time_t setTimeToNextEvent(wateringData_t* wateringData)
     {
         ESP_LOGI("setTimeToNextEvent: ","Next watering in %ds", (10));
         (*wateringData).wateringNextUnix = tTimeAct + 10;
-        ESP_LOGI("setTimeToNextEvent", "Write wat storage data: %s", esp_err_to_name(nvs_writeWatering(&s_eWateringData)));      
+        ESP_LOGI("setTimeToNextEvent", "Write wat storage data: %s", esp_err_to_name(storage_writeWatering(&s_eWateringData)));      
         return 10;     //wake up in 10s an watering
     }
     //normal operation
@@ -438,19 +470,20 @@ time_t setTimeToNextEvent(wateringData_t* wateringData)
         if(tNextWatering != (*wateringData).wateringNextUnix)
         {
            (*wateringData).wateringNextUnix = tNextWatering;
-            ESP_LOGI("setTimeToNextEvent", "Write wat storage data: %s", esp_err_to_name(nvs_writeWatering(&s_eWateringData)));      
+            ESP_LOGI("setTimeToNextEvent", "Write wat storage data: %s", esp_err_to_name(storage_writeWatering(&s_eWateringData)));      
         }
-        // return tNextWatering - tTimeAct;
-         return 60*20; //log every 20 min data
+        return tNextWatering - tTimeAct;
+        //  return 60*20; //log every 20 min data
     }
 
 }
 
-//watering
+//watering time based
 esp_err_t erWatering(wateringData_t* wateringData)
 {
     //log the periphery data
-    log_peripherieData();
+    miflora_data_t paFloraData[CHANNELCOUNT];
+    log_peripherieData(paFloraData);
 
     const bool bAvoidWaterlogging = true;       //enable to avoid watering if water is in pot
     bool bOverstepEvent = false;                //overstep watering event in case of water in pot
@@ -535,8 +568,6 @@ esp_err_t erWatering(wateringData_t* wateringData)
                                     }
                                     ESP_LOGI("erWatering: "," ui32WaterTime: %ld", ui32WateringDuration); 
                                     
-                                    //log watering data
-                                    log_wateringData(i32ChanelCount + 1, i32EventCount + 1, ui32WateringDuration/ui32PumpTimeFact, ui32AdcTouch_readPwmMux(i32ChanelCount + 9, 100));
 
                                     //watering succeed? set last watering data
                                     (*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringLastUnix = (*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringNextUnix;                                  //set last watering data
@@ -554,7 +585,7 @@ esp_err_t erWatering(wateringData_t* wateringData)
                                 ESP_LOGI("erWatering: ","tTimeAct: %lld", tTimeAct);
                                 if(tNextWatering  < (tTimeAct + (10*60)))
                                 {
-                                    wateringTimeFirst(&(deviceData.channels[i32ChanelCount].events[i32EventCount]), &(*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount], tTimeAct); 
+                                    wateringTimeFirst(&(g_sDeviceData.channels[i32ChanelCount].events[i32EventCount]), &(*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount], tTimeAct); 
                                 }
                                 else
                                 {
@@ -595,13 +626,222 @@ esp_err_t erWatering(wateringData_t* wateringData)
         vTaskDelay(200);
     }
 
-    //deinit powerstage
-    // powerstage_deinit();
-
-    // for (uint32_t i32AnalyserCount = 0; i32AnalyserCount < 512; i32AnalyserCount++)
-    // {
-    //     ESP_LOGI("Analyser","%d",(int)g_ai32Analyser[i32AnalyserCount]);
-    // }
-
     return error;
+}
+
+//watering moisture based 
+esp_err_t erWateringMoisture(wateringData_t* wateringData, deviceData_t* devData)
+{
+    esp_err_t err = ESP_OK;
+
+    //log data
+    miflora_data_t paFloraData[CHANNELCOUNT];
+    log_peripherieData(paFloraData);       //todo check for valid data
+
+    //check for moisture
+    for (uint32_t ui32ChanelCount = 0; ui32ChanelCount < CHANNELCOUNT; ui32ChanelCount++)
+    {
+        channelData_t channelData = devData->channels[ui32ChanelCount];
+        //check if channel enabled for watering
+        if(channelData.enable)     
+        {
+            ESP_LOGI("erWateringMoisture: ","Channel:%d Enabled", (int)ui32ChanelCount);
+            //check for valid humidity data
+            ESP_LOGI("erWateringMoisture: ","Channel: %d Moisture:%d MaxMoisture: %d MinMoisture: %d", (int)ui32ChanelCount, (int)paFloraData[ui32ChanelCount].moisture, (int)channelData.moisture.maxMoisture, (int)channelData.moisture.minMoisture);
+            if(paFloraData[ui32ChanelCount].valid)   
+            { 
+                //check if moisture is under defined threshold
+                if(paFloraData[ui32ChanelCount].moisture < channelData.moisture.minMoisture)
+                {
+                    //set water output for channel
+                    esp_err_t errSelector = selector_setPos(ui32ChanelCount + 1);
+
+                    if(errSelector == ERR_SEL_OK)
+                    {
+                        //calc watering time quantity [ml/20] * pumpTimeFact
+                        const uint32_t ui32PumpTimeFact = (uint32_t)(0.4*1000);      //[ms/ml]
+                        const uint32_t ui32PumpPulseDuration = 5 * ui32PumpTimeFact + 500;     //5[ml] * ui32PumpTimeFact[ms/ml] + watering dead time (500ms)-> [ms] - pulse duration of watering cycles
+                        uint32_t ui32WateringDuration = 0;
+
+                        while((paFloraData[ui32ChanelCount].moisture < channelData.moisture.maxMoisture))
+                        {
+                            //limit watering to max 100ml
+                            if (ui32WateringDuration >= (100 * ui32PumpTimeFact))
+                            {
+                                ESP_LOGI("erWatering: ","Max watering time reached - Channel: %d", (int)ui32ChanelCount);
+                                log_errorData(LOG_ERR_TYPE_WATERING, "Max watering time reached");           //log error - max watering time reached
+                                break;
+                            }
+
+                            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_UP);          //run pump for defined time
+                            ui32WateringDuration += ui32PumpPulseDuration;
+                            esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);    //wait 30s
+                            esp_light_sleep_start();
+                            log_peripherieData(paFloraData);       //todo check for valid data
+
+                            if (!paFloraData[ui32ChanelCount].valid || (paFloraData[ui32ChanelCount].moisture == 0))
+                            {
+                                ESP_LOGI("MiData: ","No valid humidity data - Channel: %d", (int)ui32ChanelCount);
+                                log_errorData(LOG_ERR_TYPE_WATERING, "No valid MIMoisture data");           //log error - no valid humidity data
+                                break;                        
+                            }
+                        }
+                        //log watering data
+                        log_wateringData(ui32ChanelCount + 1, 0, ui32WateringDuration/ui32PumpTimeFact, paFloraData[ui32ChanelCount].moisture);
+                    }
+                    else
+                    {
+                        ESP_LOGI("Selector","Positioning error Channel: %d", (int)ui32ChanelCount);
+                        log_errorData(LOG_ERR_TYPE_WATERING, "Selector positioning error");           //log error - selector positioning error
+                    }
+
+                    //set selector position to 0
+                    selector_setPos(0);
+                    ESP_LOGI("erWatering: ","Watering event(s) processed");
+                    vTaskDelay(200);
+                } 
+            }
+            else
+            {
+                ESP_LOGI("MiData: ","No valid humidity data - Channel: %d", (int)ui32ChanelCount);
+                log_errorData(LOG_ERR_TYPE_WATERING, "No valid MIMoisture data");           //log error - no valid humidity data
+            }
+        }
+    }
+    return err;
+}
+
+//read/write server data - every 4h
+esp_err_t erUpdateServerData(deviceData_t* psDeviceData)
+{
+    esp_err_t err = ESP_OK;
+
+    // credentials_t sCredentials = {"FRITZ!Box 6660 Cable CR", "98543695872303115150", "tobbyb@gmx.net", "TobiObi"};
+	// if (storage_writeCredentials(&sCredentials)== ESP_OK) 
+	// {
+	// 	ESP_LOGI("CRED", "Anmeldedaten gespeichert");
+	// }
+	// else
+	// {
+	// 	ESP_LOGW("CRED", "Schreiben der Anmeldedaten fehlgeschlagen");
+	// }
+
+	//get credentials from NVS
+	credentials_t sCredentials = {};
+    err = storage_readCredentials(&sCredentials);
+	if (err == ESP_OK) 
+	{
+	/* ---- Firebase Realtime Database Upload ---- */
+        err = firestore_wifiConnect(sCredentials.wifiSsid, sCredentials.wifiPassword);
+		if (err == ESP_OK)
+		{
+
+			// Firebase Authentication (Email/Passwort) – ID-Token holen
+            err = firestore_authenticate(sCredentials.firebaseEmail, sCredentials.firebasePassword);
+			if (err == ESP_OK)
+			{
+				/* Zeit vom Firebase Server synchronisieren */
+				firestore_syncTimeFromServer();
+
+				/* Gerätedaten aus NVS laden und senden */
+				deviceData_t sDevice = {0};
+				char acJson[2048];
+
+				
+				if (data_getDeviceData(acJson, sizeof(acJson)) == ESP_OK)
+				{
+                    char acFirestorePath[128];
+
+                    //write device data to firestore
+                    snprintf(acFirestorePath, sizeof(acFirestorePath), "%s/DEVICE/DATA", sCredentials.deviceId);
+					ESP_LOGI("FSTR", "Gelesene Gerätedaten: %s", acJson);
+                    firestore_writeString(acFirestorePath, acJson);
+
+                    // //write channel data to firestore
+                    // if (data_getChannelData(sDevice.channels, acJson, sizeof(acJson)) == ESP_OK)
+                    // {
+                    // 	ESP_LOGI("FSTR", "Gelesene Kanaldaten: %s", acJson);
+                    // 	firestore_writeString("LH_0000002/CHANNELS/", acJson);
+                    // }
+                    
+                    //append peripherie log data to firestore from NVS and clear NVS log after successful upload
+                    uint32_t ui32LineIdx = 0;
+                    uint32_t ui32Count = 4; //number of log lines to read
+                    esp_err_t eFirestoreErr = ESP_OK;
+                    snprintf(acFirestorePath, sizeof(acFirestorePath), "%s/LOG/PERIPHERIE", sCredentials.deviceId);
+                    while (data_getPeripherieLogData(acJson, sizeof(acJson), ui32LineIdx, ui32Count) == ESP_OK)
+                    {	
+                            ESP_LOGI("FSTR", "Gelesene Peripherie-Log-Daten: %s", acJson);
+                            eFirestoreErr = firestore_patchString(acFirestorePath, acJson);
+                            ui32LineIdx += ui32Count;
+                    }
+
+                    // //clear Periphery NVS log after successful upload
+                    if (eFirestoreErr == ESP_OK)
+                    {
+                    	log_clearData(LOG_TYPE_PERIPHERY);
+                    }
+
+                    //append watering log data to firestore from NVS and clear NVS log after successful upload
+                    ui32LineIdx = 0;
+                    snprintf(acFirestorePath, sizeof(acFirestorePath), "%s/LOG/WATERING", sCredentials.deviceId);
+                    while (data_getWateringLogData(acJson, sizeof(acJson), ui32LineIdx, ui32Count) == ESP_OK)
+                    {	
+                            ESP_LOGI("FSTR", "Gelesene Bewässerungs-Log-Daten: %s", acJson);
+                            eFirestoreErr = firestore_patchString(acFirestorePath, acJson);
+                            ui32LineIdx += ui32Count;
+                    }
+
+                    // //clear Watering NVS log after successful upload
+                    if (eFirestoreErr == ESP_OK)
+                    {
+                    	log_clearData(LOG_TYPE_WATERING);
+                    }
+
+                    //append error log data to firestore from NVS and clear NVS log after successful upload
+                    ui32LineIdx = 0;
+                    snprintf(acFirestorePath, sizeof(acFirestorePath), "%s/LOG/ERROR", sCredentials.deviceId);
+                    while (data_getErrorLogData(acJson, sizeof(acJson), ui32LineIdx, ui32Count) == ESP_OK)
+                    {	
+                            ESP_LOGI("FSTR", "Gelesene Fehler-Log-Daten: %s", acJson);
+                            eFirestoreErr = firestore_patchString(acFirestorePath, acJson);
+                            ui32LineIdx += ui32Count;
+                    }
+
+                    // //clear Error NVS log after successful upload
+                    if (eFirestoreErr == ESP_OK)
+                    {
+                    	log_clearData(LOG_TYPE_ERROR);
+                    }
+
+                    //read channel data from firestore and write to NVS if changed
+                    snprintf(acFirestorePath, sizeof(acFirestorePath), "%s/CHANNELS", sCredentials.deviceId);
+                    if (firestore_readString(acFirestorePath, acJson, sizeof(acJson)) == ESP_OK)
+                    {
+                        data_setChannelData(acJson, psDeviceData->channels);
+                        ble_miflora_setChannelData(psDeviceData);
+                        data_logDeviceData(psDeviceData);
+                    }
+				}
+			}
+            else
+            {
+                ESP_LOGW("FSTR", "Firebase Authentifizierung fehlgeschlagen");
+                return err;
+            }
+
+			firestore_wifiDisconnect();
+		}
+        else{
+            ESP_LOGW("WIFI", "Verbindung zum WLAN fehlgeschlagen");
+            return err;
+        }
+	}
+	else
+	{
+		ESP_LOGW("CRED", "Lesen der Credentials fehlgeschlagen");
+        return err;
+	}
+
+    return err;
 }

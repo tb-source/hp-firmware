@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "types.h"
  
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -32,16 +33,7 @@
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 
-typedef struct {
-    float    temperature;   /**< °C, resolution 0,1 °C          */
-    uint32_t illuminance;   /**< Lux                            */
-    uint8_t  moisture;      /**< humidity %            */
-    uint16_t conductivity;  /**< µS/cm                          */
-    uint8_t  battery;       /**< battery %                */
-    char     firmware[8];   /**< e.g. "3.2.1"                   */
-    bool     valid;         /**< true if all fields are valid  */
-} miflora_data_t;
- 
+
 typedef enum {
     PHASE_IDLE = 0,
     PHASE_SCAN,
@@ -55,6 +47,8 @@ typedef enum {
 
 extern void ble_miflora_init(void);
 extern void ble_miflora_read(uint32_t ui32SensorNb, miflora_data_t *out);
+extern void ble_miflora_setChannelData(const deviceData_t *psDevData);
 extern esp_err_t ble_miflora_deinit(void);
+extern esp_err_t ble_miflora_sniff(uint32_t ui32DurationMs);
 
 #endif /* MAIN_BLE_MIFLORA_H_ */

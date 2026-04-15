@@ -17,7 +17,7 @@ static const char *sc_acFilePaths[] = {
 
 #ifdef MIFLORA_ENABLE
 static const char *sc_acHeadline[] = {
-    "time, message, logicVoltage, battVoltage, solVoltage, temperature, humidity 0, humidity 1, humidity 2, waterLevel, waterEmpty, chargeStatus, mifloraTemperature1, mifloraIlluminance1, mifloraMoisture1, mifloraConductivity1, mifloraTemperature2, mifloraIlluminance2, mifloraMoisture2, mifloraConductivity2, mifloraTemperature3, mifloraIlluminance3, mifloraMoisture3, mifloraConductivity3", 
+    "time, message, logicVoltage, battVoltage, solVoltage, temperature, humidity 0, humidity 1, humidity 2, waterLevel, waterEmpty, chargeStatus, mifloraTemperature1, mifloraIlluminance1, mifloraMoisture1, mifloraConductivity1, mifloraTemperature2, mifloraIlluminance2, mifloraMoisture2, mifloraConductivity2, mifloraTemperature3, mifloraIlluminance3, mifloraMoisture3, mifloraConductivity3, airHumidity, airTemperature", 
     "time, wateringChannel, wateringEvent, wateringAmount, humidity",
     "time, errorTag, errorMessage",
 };
@@ -260,11 +260,7 @@ void log_readData(log_type_t eType)
 }
 
 //pack peripherie data for logging
-#ifdef MIFLORA_ENABLE
-void log_peripherieData(void)
-#else
-void log_peripherieData(void)
-#endif
+void log_peripherieData(miflora_data_t paFloraData[])
 {
     // char data[64];
     // char acdataString[64];
@@ -317,50 +313,54 @@ void log_peripherieData(void)
     // sprintf(acdataString, "%s", data);
     // ESP_LOGI(TAG, "Packed data: %s", acdataString);
 
-    char acData[512] = {NULL};
-    char acAppendData[32] = {NULL};
+    char acData[1024] = {0};
+    size_t uiPos = 0u;
+    bool bOverflow = false;
 
-    // //first entry -> time
-    sprintf(acAppendData, "%lld,", (long long)time(NULL));
-    strcat(acData, acAppendData);
+#define APPEND_LOG(_fmt, ...) \
+    do { \
+        if (!bOverflow && uiPos < sizeof(acData)) { \
+            int _n = snprintf(acData + uiPos, sizeof(acData) - uiPos, (_fmt), __VA_ARGS__); \
+            if (_n < 0 || (size_t)_n >= (sizeof(acData) - uiPos)) { \
+                bOverflow = true; \
+            } else { \
+                uiPos += (size_t)_n; \
+            } \
+        } \
+    } while (0)
 
-    // //second entry -> message tag
-    char cMessageTag = 'P';  //L for log
-    sprintf(acAppendData, "%c,", cMessageTag);
-    strcat(acData, acAppendData);
+    // first entry -> time
+    APPEND_LOG("%lld,", (long long)time(NULL));
 
-    //second entry -> esp voltage
-    sprintf(acAppendData, "%d,", (int)ui32EspVolt_read());
-    strcat(acData, acAppendData);
+    // second entry -> message tag
+    APPEND_LOG("%c,", 'P');
 
-     //third entry -> battery voltage
-    sprintf(acAppendData, "%d,", (int)ui32BattVolt_read());
-    strcat(acData, acAppendData);
+    // third entry -> esp voltage
+    APPEND_LOG("%d,", (int)ui32EspVolt_read());
 
-    //fourth entry -> solar voltage
-    sprintf(acAppendData, "%d,", (int)ui32SolarVolt_read());
-    strcat(acData, acAppendData);
+    // fourth entry -> battery voltage
+    APPEND_LOG("%d,", (int)ui32BattVolt_read());
 
-    //fifth entry -> temperature sensing
-    sprintf(acAppendData, "%.1f,", fTemp_read());
-    strcat(acData, acAppendData);
+    // fifth entry -> solar voltage
+    APPEND_LOG("%d,", (int)ui32SolarVolt_read());
 
-    //sixth entry -> humidity sensing
-    sprintf(acAppendData, "%d,%d,%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM1,100), (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM2,100), (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM3,100));
-    // sprintf(acAppendData, "%d,%d,%d,", (int)FDC_getCap(1)/5243, (int)FDC_getCap(2)/5243, (int)FDC_getCap(3)/5243);
-    strcat(acData, acAppendData);
+    // sixth entry -> temperature sensing
+    APPEND_LOG("%.1f,", fTemp_read());
 
-    //seventh entry -> water level
-    sprintf(acAppendData, "%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL,100));
-    strcat(acData, acAppendData);
+    // seventh entry -> humidity sensing
+    APPEND_LOG("%d,%d,%d,",
+               (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM1,100),
+               (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM2,100),
+               (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM3,100));
 
-    //eighth entry -> water empty
-    sprintf(acAppendData, "%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_TANKETY,100));
-    strcat(acData, acAppendData);
+    // eighth entry -> water level
+    APPEND_LOG("%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL,100));
 
-    // ninth entry -> charge status
-    sprintf(acAppendData, "%d,", (int)ui32Charge_read());
-    strcat(acData, acAppendData);
+    // ninth entry -> water empty
+    APPEND_LOG("%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_TANKETY,100));
+
+    // tenth entry -> charge status
+    APPEND_LOG("%d,", (int)ui32Charge_read());
 
     #ifdef MIFLORA_ENABLE
 
@@ -370,26 +370,35 @@ void log_peripherieData(void)
     {
         ble_miflora_read(i, &pFloraData);
 
-        sprintf(acAppendData, "%.1f,", pFloraData.temperature);
-        strcat(acData, acAppendData);
-
-        sprintf(acAppendData, "%d,", (int)pFloraData.illuminance);
-        strcat(acData, acAppendData);
-
-        sprintf(acAppendData, "%d,", (int)pFloraData.moisture);
-        strcat(acData, acAppendData);
-
-        if (i<2){
-            sprintf(acAppendData, "%d,", (int)pFloraData.conductivity);
-        }
-        else{
-             sprintf(acAppendData, "%d\n", (int)pFloraData.conductivity);
-        }
-        strcat(acData, acAppendData);
+        APPEND_LOG("%.1f,", pFloraData.temperature);
+        APPEND_LOG("%d,", (int)pFloraData.illuminance);
+        APPEND_LOG("%d,", (int)pFloraData.moisture);
+        APPEND_LOG("%d,", (int)pFloraData.conductivity);
+        paFloraData[i] = pFloraData;
     }
     ble_miflora_deinit();
 
     #endif
+
+    // air humidity and temperature from AHT20
+    ahtData_t sAhtData;
+    if (AHT20_read(&sAhtData) == ESP_OK)
+    {
+        APPEND_LOG("%.1f,", sAhtData.humidity);
+        APPEND_LOG("%.1f\n", sAhtData.temperature);
+    }
+    else
+    {
+        APPEND_LOG("%s", "0,0\n");
+    }
+
+#undef APPEND_LOG
+
+    if (bOverflow)
+    {
+        ESP_LOGE(TAG, "Pack periphery data overflow (buffer too small)");
+        return;
+    }
 
     // Pack data for logging
     ESP_LOGI(TAG, "Pack periphery data: %s", acData);

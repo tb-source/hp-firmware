@@ -30,6 +30,7 @@ static motor_regulation_t s_motorRegulation = {.voltageRegKp = 2000,				//12Q12
 											   .motorSpeedFactor = 18392,		//16Q16 [1/min*mV]
 											   .voltageEmfSet = 10000};			//16Q4
 
+static sel_prop_t s_saSelProperties = {.ui32Angle = {0, 0, 0, 0}};		//angle values for selector positions (16Q16) [°*65536]
 static volatile motor_direction_t s_motorState;
 static volatile int s_eMotorRegulationSM = MOTOR_REG_IDL;
 
@@ -276,6 +277,10 @@ bool bPowerstage_init(void)
 	{
 		ui32BattVolt_read();
 	}
+
+	//read selector position from nvs
+	storage_readSelectorProperty(&s_saSelProperties);
+
 
 	// ESP_LOGI("MCPWM: ", "ui32SelPos: %d", (int)s_ui32SelPos);
 	return true;
@@ -565,6 +570,7 @@ esp_err_sel_t selector_setAngle(int32_t i32SetAngleRaw, bool bInitTLV)
 		// ESP_LOGI("I2C: ", "Init done");
 		TLV_init();				//init TLV sensor
 		// ESP_LOGI("TLV: ", "Init done");
+
 	}
 
 	//init powerstage
@@ -727,10 +733,10 @@ esp_err_sel_t selector_setPos(int32_t i32SetPos)
 		return ERR_SEL_POS_OUTOFRANGE;
 	}
 
-	const uint32_t caui32AnglePosSel[4] = {250, 340, 160, 80};		//angle pos for selector - device 1
+	// const uint32_t caui32AnglePosSel[4] = {250, 340, 160, 80};		//angle pos for selector - device 1
 	// const uint32_t caui32AnglePosSel[4] = {40, 120, 300, 250};		//angle pos for selector - device 2
 
-	return selector_setAngle(caui32AnglePosSel[i32SetPos], false);	//set angle for selector
+	return selector_setAngle(s_saSelProperties.ui32Angle[i32SetPos], false);	//set angle for selector
 }
 
 
@@ -1324,7 +1330,7 @@ uint32_t ui32Level_readPerc(void)
 	return ui32LevelPerc;
 }
 
-
+#ifdef PIN_HX710_OUT && PIN_HX710_SCK
 void HX710_init()
 {
     gpio_config_t io_conf = {};
@@ -1387,3 +1393,4 @@ esp_err_t ui32HX710_read(int32_t *value)
     *value = (int32_t)raw;
     return ESP_OK;
 }
+#endif

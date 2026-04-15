@@ -18,7 +18,12 @@
 #include "peripherie/wifi_time.h"
 #include "log.h"
 #include "ble_miflora.h"
+#include "storage.h"
+#include "datamanagement.h"
+#include "helper.h"
+#include "firestore.h"
 
+extern deviceData_t g_sDeviceData;
 extern void watering_init(void);
 extern deviceData_t eDeviceData_get(void);
 

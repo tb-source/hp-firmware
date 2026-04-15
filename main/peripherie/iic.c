@@ -13,6 +13,7 @@ static i2c_master_bus_handle_t bus_handle;
 static i2c_master_dev_handle_t tlv_dev_handle;
 static i2c_master_dev_handle_t pcf_dev_handle;
 static i2c_master_dev_handle_t fdc_dev_handle;
+static i2c_master_dev_handle_t aht_dev_handle;
 
 //init i2c 
 void i2c_init()
@@ -54,6 +55,10 @@ void i2c_init()
         //init fdc dev handle
         dev_cfg.device_address = FDC1004_ADDR;
         ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &fdc_dev_handle));
+
+        //init aht20 dev handle
+        dev_cfg.device_address = AHT20_ADDR;
+        ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &aht_dev_handle));
 
         s_bIICInit = true;      
     }
@@ -291,7 +296,7 @@ uint32_t FDC_getCap(uint8_t ui8Channel)
     ESP_ERROR_CHECK(gpio_set_level(PIN_PWM_MUX_EN, 1));                                                            		//enable PWM sensing
      ESP_LOGI("FDC", "Start 1");
     ESP_ERROR_CHECK(gpio_set_level(PIN_ADC_MUX_EN, 0));                                                            		//disable ADC sensing 
- ESP_LOGI("FDC", "Start 2");
+    ESP_LOGI("FDC", "Start 2");
     //set mux channel - gpio
     ESP_ERROR_CHECK(gpio_set_level(PIN_ADCMUX1, (ui8Channel+8)&1));        	//select Mux HUM2
      ESP_LOGI("FDC", "Start 3");
@@ -338,4 +343,86 @@ uint32_t FDC_getCap(uint8_t ui8Channel)
 
     ESP_LOGI("FDC", "Get humidity data: %f", (float)meas_data/524288.0);
     return meas_data;
+}
+
+esp_err_t AHT20_softReset(void)
+{
+    AHT20_init();
+
+    const uint8_t cmd = 0xBA;
+    esp_err_t ret = i2c_master_transmit(aht_dev_handle, &cmd, 1, 100);
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(25));
+    return ESP_OK;
+}
+
+esp_err_t AHT20_init(void)
+{
+	static bool bAHTinit = false;
+	i2c_init();
+	if(!bAHTinit)
+    {
+
+        //set power pin
+        gpio_set_level(PIN_AHT20_EN, 1);     //power on AHT20
+        vTaskDelay(pdMS_TO_TICKS(50));                        //wait for power up
+        
+        i2c_init();
+
+        // 0xBE: Initialisierungs-/Kalibrierkommando, 0x08 aktiviert den Kalibrierungszustand, 0x00 ist reserviert.
+        uint8_t cmd[3] = {0xBE, 0x08, 0x00};
+        esp_err_t ret = i2c_master_transmit(aht_dev_handle, cmd, sizeof(cmd), 100);
+        if (ret != ESP_OK)
+        {
+            return ret;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+        bAHTinit = true;
+    }
+    return ESP_OK;
+}
+
+esp_err_t AHT20_read(ahtData_t *data)
+{
+    
+    if (data == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    AHT20_init();
+
+    uint8_t trigger_cmd[3] = {0xAC, 0x33, 0x00};
+    esp_err_t ret = i2c_master_transmit(aht_dev_handle, trigger_cmd, sizeof(trigger_cmd), 100);
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(85));
+
+    uint8_t raw[6] = {0};
+    ret = i2c_master_receive(aht_dev_handle, raw, sizeof(raw), 100);
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+
+    if (raw[0] & 0x80)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint32_t hum_raw = ((uint32_t)raw[1] << 12) | ((uint32_t)raw[2] << 4) | ((uint32_t)raw[3] >> 4);
+    uint32_t temp_raw = (((uint32_t)raw[3] & 0x0F) << 16) | ((uint32_t)raw[4] << 8) | (uint32_t)raw[5];
+
+    data->humidity = ((float)hum_raw * 100.0f) / 1048576.0f;
+    data->temperature = ((float)temp_raw * 200.0f) / 1048576.0f - 50.0f;
+
+    return ESP_OK;
 }

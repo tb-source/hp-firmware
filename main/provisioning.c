@@ -5,6 +5,7 @@
  *      Author: tobby
  */
 #include "provisioning.h"
+#include "storage.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -16,65 +17,52 @@
 #include <esp_log.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
+#include <esp_netif.h>
 #include <nvs_flash.h>
+#include <esp_bt.h>
+
 
 #include <wifi_provisioning/manager.h>
 #include <wifi_provisioning/scheme_ble.h>
 
 static const char *TAG = "app";
 
-#define EXAMPLE_PROV_SEC2_USERNAME          "wifiprov"
-#define EXAMPLE_PROV_SEC2_PWD               "abcd1234"
-
 void bt_prov_reset(void);
 
 static deviceData_t s_peDevice_data;
 
-/* This salt,verifier has been generated for username = "wifiprov" and password = "abcd1234"
- * IMPORTANT NOTE: For production cases, this must be unique to every device
- * and should come from device manufacturing partition.*/
-static const char sec2_salt[] = {
-    0x03, 0x6e, 0xe0, 0xc7, 0xbc, 0xb9, 0xed, 0xa8, 0x4c, 0x9e, 0xac, 0x97, 0xd9, 0x3d, 0xec, 0xf4
-};
-
-static const char sec2_verifier[] = {
-    0x7c, 0x7c, 0x85, 0x47, 0x65, 0x08, 0x94, 0x6d, 0xd6, 0x36, 0xaf, 0x37, 0xd7, 0xe8, 0x91, 0x43,
-    0x78, 0xcf, 0xfd, 0x61, 0x6c, 0x59, 0xd2, 0xf8, 0x39, 0x08, 0x12, 0x72, 0x38, 0xde, 0x9e, 0x24,
-    0xa4, 0x70, 0x26, 0x1c, 0xdf, 0xa9, 0x03, 0xc2, 0xb2, 0x70, 0xe7, 0xb1, 0x32, 0x24, 0xda, 0x11,
-    0x1d, 0x97, 0x18, 0xdc, 0x60, 0x72, 0x08, 0xcc, 0x9a, 0xc9, 0x0c, 0x48, 0x27, 0xe2, 0xae, 0x89,
-    0xaa, 0x16, 0x25, 0xb8, 0x04, 0xd2, 0x1a, 0x9b, 0x3a, 0x8f, 0x37, 0xf6, 0xe4, 0x3a, 0x71, 0x2e,
-    0xe1, 0x27, 0x86, 0x6e, 0xad, 0xce, 0x28, 0xff, 0x54, 0x46, 0x60, 0x1f, 0xb9, 0x96, 0x87, 0xdc,
-    0x57, 0x40, 0xa7, 0xd4, 0x6c, 0xc9, 0x77, 0x54, 0xdc, 0x16, 0x82, 0xf0, 0xed, 0x35, 0x6a, 0xc4,
-    0x70, 0xad, 0x3d, 0x90, 0xb5, 0x81, 0x94, 0x70, 0xd7, 0xbc, 0x65, 0xb2, 0xd5, 0x18, 0xe0, 0x2e,
-    0xc3, 0xa5, 0xf9, 0x68, 0xdd, 0x64, 0x7b, 0xb8, 0xb7, 0x3c, 0x9c, 0xfc, 0x00, 0xd8, 0x71, 0x7e,
-    0xb7, 0x9a, 0x7c, 0xb1, 0xb7, 0xc2, 0xc3, 0x18, 0x34, 0x29, 0x32, 0x43, 0x3e, 0x00, 0x99, 0xe9,
-    0x82, 0x94, 0xe3, 0xd8, 0x2a, 0xb0, 0x96, 0x29, 0xb7, 0xdf, 0x0e, 0x5f, 0x08, 0x33, 0x40, 0x76,
-    0x52, 0x91, 0x32, 0x00, 0x9f, 0x97, 0x2c, 0x89, 0x6c, 0x39, 0x1e, 0xc8, 0x28, 0x05, 0x44, 0x17,
-    0x3f, 0x68, 0x02, 0x8a, 0x9f, 0x44, 0x61, 0xd1, 0xf5, 0xa1, 0x7e, 0x5a, 0x70, 0xd2, 0xc7, 0x23,
-    0x81, 0xcb, 0x38, 0x68, 0xe4, 0x2c, 0x20, 0xbc, 0x40, 0x57, 0x76, 0x17, 0xbd, 0x08, 0xb8, 0x96,
-    0xbc, 0x26, 0xeb, 0x32, 0x46, 0x69, 0x35, 0x05, 0x8c, 0x15, 0x70, 0xd9, 0x1b, 0xe9, 0xbe, 0xcc,
-    0xa9, 0x38, 0xa6, 0x67, 0xf0, 0xad, 0x50, 0x13, 0x19, 0x72, 0x64, 0xbf, 0x52, 0xc2, 0x34, 0xe2,
-    0x1b, 0x11, 0x79, 0x74, 0x72, 0xbd, 0x34, 0x5b, 0xb1, 0xe2, 0xfd, 0x66, 0x73, 0xfe, 0x71, 0x64,
-    0x74, 0xd0, 0x4e, 0xbc, 0x51, 0x24, 0x19, 0x40, 0x87, 0x0e, 0x92, 0x40, 0xe6, 0x21, 0xe7, 0x2d,
-    0x4e, 0x37, 0x76, 0x2f, 0x2e, 0xe2, 0x68, 0xc7, 0x89, 0xe8, 0x32, 0x13, 0x42, 0x06, 0x84, 0x84,
-    0x53, 0x4a, 0xb3, 0x0c, 0x1b, 0x4c, 0x8d, 0x1c, 0x51, 0x97, 0x19, 0xab, 0xae, 0x77, 0xff, 0xdb,
-    0xec, 0xf0, 0x10, 0x95, 0x34, 0x33, 0x6b, 0xcb, 0x3e, 0x84, 0x0f, 0xb9, 0xd8, 0x5f, 0xb8, 0xa0,
-    0xb8, 0x55, 0x53, 0x3e, 0x70, 0xf7, 0x18, 0xf5, 0xce, 0x7b, 0x4e, 0xbf, 0x27, 0xce, 0xce, 0xa8,
-    0xb3, 0xbe, 0x40, 0xc5, 0xc5, 0x32, 0x29, 0x3e, 0x71, 0x64, 0x9e, 0xde, 0x8c, 0xf6, 0x75, 0xa1,
-    0xe6, 0xf6, 0x53, 0xc8, 0x31, 0xa8, 0x78, 0xde, 0x50, 0x40, 0xf7, 0x62, 0xde, 0x36, 0xb2, 0xba
-};
+static uint8_t s_aui8Sec2Salt[BT_SALT_LEN];
+static uint8_t s_aui8Sec2Verifier[BT_VERIFIER_LEN];
 
 static esp_err_t example_get_sec2_salt(const char **salt, uint16_t *salt_len) {
-    ESP_LOGI(TAG, "Development mode: using hard coded salt");
-    *salt = sec2_salt;
-    *salt_len = sizeof(sec2_salt);
+    if (salt == NULL || salt_len == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t eErr = storage_readBtSalt(s_aui8Sec2Salt, sizeof(s_aui8Sec2Salt));
+    if (eErr != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read sec2 salt from NVS: %s", esp_err_to_name(eErr));
+        return eErr;
+    }
+
+    *salt = (const char *)s_aui8Sec2Salt;
+    *salt_len = (uint16_t)sizeof(s_aui8Sec2Salt);
     return ESP_OK;
 }
 
 static esp_err_t example_get_sec2_verifier(const char **verifier, uint16_t *verifier_len) {
-    ESP_LOGI(TAG, "Development mode: using hard coded verifier");
-    *verifier = sec2_verifier;
-    *verifier_len = sizeof(sec2_verifier);
+    if (verifier == NULL || verifier_len == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t eErr = storage_readBtVerifier(s_aui8Sec2Verifier, sizeof(s_aui8Sec2Verifier));
+    if (eErr != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read sec2 verifier from NVS: %s", esp_err_to_name(eErr));
+        return eErr;
+    }
+
+    *verifier = (const char *)s_aui8Sec2Verifier;
+    *verifier_len = (uint16_t)sizeof(s_aui8Sec2Verifier);
     return ESP_OK;
 }
 
@@ -213,7 +201,7 @@ esp_err_t custom_prov_data_handler(uint32_t session_id, const uint8_t *inbuf, ss
         acInputString[inlen] = 0;   //null termiantion
         ESP_LOGI(TAG, "Received data: %.*s", inlen, (char *)inbuf);
         *outbuf = (uint8_t*)strdup(pacData_send_receive(acInputString, &s_peDevice_data));
-        *outlen = strlen(outbuf) + 1;   /* +1 for NULL terminating byte */
+        *outlen = strlen((char *)*outbuf) + 1;   /* +1 for NULL terminating byte */
         iTimeKeeper = 0;    //reste timeout detection
     }
     else
@@ -237,22 +225,13 @@ void bt_prov(deviceData_t* peDevice_data)
     //set data 
     s_peDevice_data = *peDevice_data;
 
-    /* Initialize NVS partition */
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        /* NVS partition was truncated
-         * and needs to be erased */
-        ESP_ERROR_CHECK(nvs_flash_erase());
+    /* NVS bereits durch storage_init() initialisiert */
 
-        /* Retry nvs_flash_init */
-        ESP_ERROR_CHECK(nvs_flash_init());
-    }
+    /* Initialize TCP/IP (idempotent) */
+    esp_netif_init();
 
-    /* Initialize TCP/IP */
-    ESP_ERROR_CHECK(esp_netif_init());
-
-    /* Initialize the event loop */
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    /* Initialize the event loop (ignoriere Fehler falls bereits erstellt) */
+    esp_event_loop_create_default();
     wifi_event_group = xEventGroupCreate();
 
     /* Register our event handler for Wi-Fi, IP and Provisioning related events */
@@ -264,7 +243,12 @@ void bt_prov(deviceData_t* peDevice_data)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
 
     /* Initialize Wi-Fi including netif with default config */
-    esp_netif_create_default_wifi_sta();
+    static bool s_bNetifCreated = false;
+    if (!s_bNetifCreated)
+    {
+        esp_netif_create_default_wifi_sta();
+        s_bNetifCreated = true;
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -284,7 +268,7 @@ void bt_prov(deviceData_t* peDevice_data)
          * to take care of this automatically. This can be set to
          * WIFI_PROV_EVENT_HANDLER_NONE when using wifi_prov_scheme_softap*/
 
-        .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM
+        .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE
     };
 
     /* Initialize provisioning manager with the
@@ -312,12 +296,6 @@ void bt_prov(deviceData_t* peDevice_data)
 
         wifi_prov_security_t security = WIFI_PROV_SECURITY_2;
         /* The username must be the same one, which has been used in the generation of salt and verifier */
-
-        /* This pop field represents the password that will be used to generate salt and verifier.
-         * The field is present here in order to generate the QR code containing password.
-         * In production this password field shall not be stored on the device */
-        const char *username  = EXAMPLE_PROV_SEC2_USERNAME;
-        const char *pop = EXAMPLE_PROV_SEC2_PWD;
 
         /* This is the structure for passing security parameters
          * for the protocomm security 2.
@@ -415,6 +393,36 @@ void bt_prov(deviceData_t* peDevice_data)
     ESP_LOGI("PROV", "Disconnect");
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     wifi_prov_mgr_deinit();
+
+    /* Event-Handler abmelden */
+    esp_event_handler_unregister(WIFI_PROV_EVENT,                  ESP_EVENT_ANY_ID,    &event_handler);
+    esp_event_handler_unregister(PROTOCOMM_TRANSPORT_BLE_EVENT,    ESP_EVENT_ANY_ID,    &event_handler);
+    esp_event_handler_unregister(PROTOCOMM_SECURITY_SESSION_EVENT, ESP_EVENT_ANY_ID,    &event_handler);
+    esp_event_handler_unregister(WIFI_EVENT,                       ESP_EVENT_ANY_ID,    &event_handler);
+    esp_event_handler_unregister(IP_EVENT,                         IP_EVENT_STA_GOT_IP, &event_handler);
+
+    if (wifi_event_group != NULL)
+    {
+        vEventGroupDelete(wifi_event_group);
+        wifi_event_group = NULL;
+    }
+
+    /* WiFi stoppen damit firestore_wifiConnect() sauber neu starten kann */
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    esp_wifi_deinit();
+
+    /* BT-Speicher freigeben (WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM
+     * deinitialisiert den Bluedroid-Stack automatisch – Controller prüfen) */
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED)
+    {
+        esp_bt_controller_disable();
+    }
+    if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE)
+    {
+        esp_bt_controller_deinit();
+    }
+    esp_bt_mem_release(ESP_BT_MODE_BTDM);
     // wifi_prov_mgr_reset_sm_state_for_reprovision(); 
     // xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, true, true, portMAX_DELAY);
     *peDevice_data = s_peDevice_data;

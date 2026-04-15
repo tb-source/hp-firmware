@@ -24,6 +24,7 @@
 #define TLV493_ADDR               0x5E
 #define FDC1004_ADDR              0x50  
 #define PCF8563_ADDR              0x51   
+#define AHT20_ADDR                0x38
 #define TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3"
 
 typedef struct {
@@ -43,12 +44,20 @@ typedef struct {
     uint16_t year;
 } pcfData_t;
 
+typedef struct {
+    float temperature;
+    float humidity;
+} ahtData_t;
+
 extern void i2c_init(void);
 extern void i2c_deinit(void);
 extern void TLV_init(void);
 extern void TLV_deinit(void);
 extern int32_t i32TLV_getAngle(void);
 extern uint32_t FDC_getCap(uint8_t ui8Channel);
+extern esp_err_t AHT20_init(void);
+extern esp_err_t AHT20_softReset(void);
+extern esp_err_t AHT20_read(ahtData_t *data);
 
 extern time_t RTCExt_getUnixTime(void);
 extern void RTCExt_setUnixTime(void);

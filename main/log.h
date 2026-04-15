@@ -15,6 +15,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
+#include "types.h"
 #include "periphery.h"
 #include "ble_miflora.h"
 
@@ -34,7 +35,7 @@ typedef enum{
 
 extern void log_readData(log_type_t eType);
 extern void log_clearData(log_type_t eType);
-extern void log_peripherieData(void);
+extern void log_peripherieData(miflora_data_t paFloraData[]);
 extern void log_wateringData(uint32_t ui32WateringChannel, uint32_t ui32WateringEvent, uint32_t ui32WateringAmount, uint32_t ui32humidity);
 extern void log_errorData(log_error_type_t eErrorType, char* pacErrorMessage);
 

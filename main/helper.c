@@ -27,7 +27,6 @@ esp_err_t data_convert_read(deviceData_t* device_data, char* json_data) {
         cJSON *time = cJSON_GetObjectItem(root, "time");
 
         if (device){
-
             (*device_data).id = (int32_t)cJSON_GetObjectItem(device, "id")->valueint;
             strncpy((*device_data).name , cJSON_GetObjectItem(device, "name")->valuestring, sizeof((*device_data).name ) - 1);
             strncpy((*device_data).status , cJSON_GetObjectItem(device, "status")->valuestring, sizeof((*device_data).status ) - 1);
@@ -48,17 +47,13 @@ esp_err_t data_convert_read(deviceData_t* device_data, char* json_data) {
                 for (int i = 0; i < num_channels; i++) {
                     //manage channel data
                     cJSON *channel = cJSON_GetArrayItem(channels, i);
-                    (*device_data).channels[i].id = i + 1;//cJSON_GetObjectItem(channel, "id")->valueint;
                     strncpy((*device_data).channels[i].name, cJSON_GetObjectItem(channel, "name")->valuestring, sizeof((*device_data).channels[i].name) - 1);
-                    strncpy((*device_data).channels[i].description, cJSON_GetObjectItem(channel, "description")->valuestring, sizeof((*device_data).channels[i].description) - 1);
                     (*device_data).channels[i].enable = cJSON_IsTrue(cJSON_GetObjectItem(channel, "enable"));
                     // (*device_data).channels[i].duration = cJSON_GetObjectItem(channel, "duration")->valueint;
                     (*device_data).channels[i].frequency = cJSON_GetObjectItem(channel, "frequency")->valueint;
 
                     //printing channel data
-                    ESP_LOGI(TAG, "Channel ID: %d", (int)(*device_data).channels[i].id);
                     ESP_LOGI(TAG, "Name: %s", (*device_data).channels[i].name);
-                    ESP_LOGI(TAG, "Description: %s", (*device_data).channels[i].description);
                     ESP_LOGI(TAG, "Enable: %s", (*device_data).channels[i].enable ? "true" : "false");
                     ESP_LOGI(TAG, "Frequency: %d", (int)(*device_data).channels[i].frequency);
 
@@ -77,11 +72,11 @@ esp_err_t data_convert_read(deviceData_t* device_data, char* json_data) {
                         for (int j = 0; j < num_events; j++) {
                             cJSON *event = cJSON_GetArrayItem(events, j);
                             (*device_data).channels[i].events[j].amount = cJSON_GetObjectItem(event, "amount")->valueint;
-                            (*device_data).channels[i].events[j].time = cJSON_GetObjectItem(event, "time")->valueint;
+                            // (*device_data).channels[i].events[j].hour = cJSON_GetObjectItem(event, "time")->valueint;
 
                             //Printing event data
                             ESP_LOGI(TAG, "Amount: %d", (int)(*device_data).channels[i].events[j].amount);
-                            ESP_LOGI(TAG, "Time: %d", (int)(*device_data).channels[i].events[j].time);
+                            // ESP_LOGI(TAG, "Time: %d", (int)(*device_data).channels[i].events[j].time);
                         }
                     }
                 }
@@ -141,9 +136,7 @@ char* data_convert_write(deviceData_t device_data)
     for (int32_t channelIndex = 0; channelIndex < CHANNELCOUNT; ++channelIndex)
     {
         cJSON *newChannel = cJSON_CreateObject();
-        cJSON_AddItemToObject(newChannel, "id", cJSON_CreateNumber(device_data.channels[channelIndex].id));
         cJSON_AddItemToObject(newChannel, "name", cJSON_CreateString(device_data.channels[channelIndex].name));
-        cJSON_AddItemToObject(newChannel, "description", cJSON_CreateString(device_data.channels[channelIndex].description));
         if (device_data.channels[channelIndex].enable){
            cJSON_AddItemToObject(newChannel, "enable", cJSON_CreateTrue());
         }
@@ -161,7 +154,7 @@ char* data_convert_write(deviceData_t device_data)
             {
                 cJSON *newEvent = cJSON_CreateObject();
                 cJSON_AddItemToObject(newEvent, "amount", cJSON_CreateNumber(device_data.channels[channelIndex].events[eventIndex].amount));
-                cJSON_AddItemToObject(newEvent, "time", cJSON_CreateNumber(device_data.channels[channelIndex].events[eventIndex].time));
+                // cJSON_AddItemToObject(newEvent, "time", cJSON_CreateNumber(device_data.channels[channelIndex].events[eventIndex].time));
                 cJSON_AddItemToArray(events, newEvent);
             }
         }
