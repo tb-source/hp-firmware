@@ -100,7 +100,8 @@ esp_err_t data_getDeviceData(char *pacBuf, size_t uiBufSize)
     time_t   tTime      = time(NULL);
     float    fTemp      = fTemp_read();
     float    fBatt      = (float)ui32BattVolt_read();
-    uint32_t ui32WatLev = ui32Level_readMl();
+    int32_t i32WatLev;
+    erLevel_readPerc(&i32WatLev);
 
     int i32Len = snprintf(pacBuf, uiBufSize,
         "{"
@@ -112,7 +113,7 @@ esp_err_t data_getDeviceData(char *pacBuf, size_t uiBufSize)
         (long long)tTime,
         fTemp,
         fBatt / 1000.0f,
-        (unsigned long)ui32WatLev);
+        (unsigned long)i32WatLev);
 
     if (i32Len < 0 || (size_t)i32Len >= uiBufSize)
     {
@@ -125,152 +126,182 @@ esp_err_t data_getDeviceData(char *pacBuf, size_t uiBufSize)
 }
 
 /* =========================================================================
- * prv_csvLineToJson  (intern)
+ * Header-gesteuertes CSV-Parsing für Periphery-Log
  * ========================================================================= */
 
-static size_t prv_csvLineToJson(const char *pacLine, char *pacBuf, size_t uiBufSize)
+typedef enum
+{
+    COL_TYPE_TIME,    /* Zeitstempel → wird JSON-Key          */
+    COL_TYPE_CHAR,    /* erstes Zeichen → Zeichenwert         */
+    COL_TYPE_SKIP,    /* Spalte ignorieren                    */
+    COL_TYPE_MV,      /* int / 1000 → float, "%.3f"          */
+    COL_TYPE_FLOAT1,  /* atof → "%.1f"                       */
+    COL_TYPE_INT,     /* atoi → "%d"                         */
+    COL_TYPE_BOOL,    /* atoi != 0 → "true"/"false"          */
+} prv_col_type_t;
+
+typedef struct
+{
+    const char     *pac_csv;   /* Spaltenname im CSV-Header              */
+    const char     *pac_json;  /* JSON-Schlüssel (NULL bei TIME / SKIP)  */
+    prv_col_type_t  e_type;
+} prv_col_def_t;
+
+static const prv_col_def_t sc_asColDefs[] = {
+    { "time",                 NULL,      COL_TYPE_TIME   },
+    { "message",              "EVENT",   COL_TYPE_CHAR   },
+    { "logicVoltage",         NULL,      COL_TYPE_SKIP   },
+    { "battVoltage",          "BATT",    COL_TYPE_MV     },
+    { "solVoltage",           "SOL",     COL_TYPE_MV     },
+    { "temperature",          "TEMP",    COL_TYPE_FLOAT1 },
+    { "humidity 0",           "HUM1",    COL_TYPE_INT    },
+    { "humidity 1",           "HUM2",    COL_TYPE_INT    },
+    { "humidity 2",           "HUM3",    COL_TYPE_INT    },
+    { "waterLevel",           "LEV",     COL_TYPE_INT    },
+    { "waterEmpty",           "ETY",     COL_TYPE_INT    },
+    { "selTouch",             "SEL",     COL_TYPE_INT    },
+    { "pumpTouch",            "PUMP",    COL_TYPE_INT    },
+    { "chargeStatus",         "CHRG",    COL_TYPE_BOOL   },
+    { "mifloraTemperature1",  "MITEMP1", COL_TYPE_FLOAT1 },
+    { "mifloraIlluminance1",  "MIILL1",  COL_TYPE_INT    },
+    { "mifloraMoisture1",     "MIMOIS1", COL_TYPE_INT    },
+    { "mifloraConductivity1", "MICOND1", COL_TYPE_INT    },
+    { "mifloraTemperature2",  "MITEMP2", COL_TYPE_FLOAT1 },
+    { "mifloraIlluminance2",  "MIILL2",  COL_TYPE_INT    },
+    { "mifloraMoisture2",     "MIMOIS2", COL_TYPE_INT    },
+    { "mifloraConductivity2", "MICOND2", COL_TYPE_INT    },
+    { "mifloraTemperature3",  "MITEMP3", COL_TYPE_FLOAT1 },
+    { "mifloraIlluminance3",  "MIILL3",  COL_TYPE_INT    },
+    { "mifloraMoisture3",     "MIMOIS3", COL_TYPE_INT    },
+    { "mifloraConductivity3", "MICOND3", COL_TYPE_INT    },
+    { "airHumidity",          "AIRHUM",  COL_TYPE_FLOAT1 },
+    { "airTemperature",       "AIRTEMP", COL_TYPE_FLOAT1 },
+};
+
+#define PRV_COL_DEF_COUNT  (sizeof(sc_asColDefs) / sizeof(sc_asColDefs[0]))
+#define PRV_MAX_CSV_COLS   32u
+
+/* Baut Map: sc_asColDefs[i] → CSV-Feldindex (-1 wenn Spalte fehlt).
+ * pacHeader wird durch strtok modifiziert. */
+static void prv_buildColMap(char *pacHeader, int8_t *pai8Map)
+{
+    for (size_t uiI = 0u; uiI < PRV_COL_DEF_COUNT; uiI++) { pai8Map[uiI] = -1; }
+
+    char    *pacFields[PRV_MAX_CSV_COLS];
+    uint8_t  ui8Cnt = 0u;
+    char    *pacTok = strtok(pacHeader, ",");
+    while (pacTok != NULL && ui8Cnt < PRV_MAX_CSV_COLS)
+    {
+        while (*pacTok == ' ') { pacTok++; }
+        size_t uiLen = strlen(pacTok);
+        while (uiLen > 0u && (pacTok[uiLen - 1u] == ' '  ||
+                               pacTok[uiLen - 1u] == '\r' ||
+                               pacTok[uiLen - 1u] == '\n'))
+        {
+            pacTok[--uiLen] = '\0';
+        }
+        pacFields[ui8Cnt++] = pacTok;
+        pacTok = strtok(NULL, ",");
+    }
+
+    for (size_t uiDef = 0u; uiDef < PRV_COL_DEF_COUNT; uiDef++)
+    {
+        for (uint8_t uiCol = 0u; uiCol < ui8Cnt; uiCol++)
+        {
+            if (strcmp(sc_asColDefs[uiDef].pac_csv, pacFields[uiCol]) == 0)
+            {
+                pai8Map[uiDef] = (int8_t)uiCol;
+                break;
+            }
+        }
+    }
+}
+
+/* Wandelt eine CSV-Datenzeile anhand der Spalten-Map in ein JSON-Objekt um. */
+static size_t prv_csvLineToJson(const char *pacLine, const int8_t *pai8Map,
+                                char *pacBuf, size_t uiBufSize)
 {
     char acCopy[512];
     strncpy(acCopy, pacLine, sizeof(acCopy) - 1u);
     acCopy[sizeof(acCopy) - 1u] = '\0';
     acCopy[strcspn(acCopy, "\r\n")] = '\0';
 
-    char   *pacFields[28] = {NULL};
-    uint8_t ui8Cnt        = 0u;
-    char   *pacToken      = strtok(acCopy, ",");
-    while (pacToken != NULL && ui8Cnt < 28u)
+    char    *pacFields[PRV_MAX_CSV_COLS];
+    uint8_t  ui8Cnt = 0u;
+    char    *pacTok = strtok(acCopy, ",");
+    while (pacTok != NULL && ui8Cnt < PRV_MAX_CSV_COLS)
     {
-        while (*pacToken == ' ') { pacToken++; }
-        pacFields[ui8Cnt++] = pacToken;
-        pacToken = strtok(NULL, ",");
+        while (*pacTok == ' ') { pacTok++; }
+        pacFields[ui8Cnt++] = pacTok;
+        pacTok = strtok(NULL, ",");
     }
 
-    if (ui8Cnt < 12u) { return 0u; }
-
-    long long llTime  = atoll(pacFields[0]);
-    char      cEvent  = pacFields[1][0];
-    float     fBatt   = (float)atoi(pacFields[3]) / 1000.0f;
-    float     fSol    = (float)atoi(pacFields[4]) / 1000.0f;
-    float     fTemp   = atof (pacFields[5]);
-    int       i32Hum1 = atoi (pacFields[6]);
-    int       i32Hum2 = atoi (pacFields[7]);
-    int       i32Hum3 = atoi (pacFields[8]);
-    int       i32Lev  = atoi (pacFields[9]);
-    int       i32Ety  = atoi (pacFields[10]);
-    bool      bChrg   = atoi (pacFields[11]) != 0;
-
-    int i32Len;
-
-    if (ui8Cnt >= 26u)
+    /* Zeitstempel (TIME-Spalte) ermitteln */
+    long long llTime = 0LL;
+    for (size_t uiDef = 0u; uiDef < PRV_COL_DEF_COUNT; uiDef++)
     {
-        // Miflora (Felder 12-23) + AHT20 Luftfeuchte/Lufttemperatur (Felder 24-25)
-        float fMiTemp1   = atof(pacFields[12]);
-        int   i32MiIll1  = atoi(pacFields[13]);
-        int   i32MiMois1 = atoi(pacFields[14]);
-        int   i32MiCond1 = atoi(pacFields[15]);
-        float fMiTemp2   = atof(pacFields[16]);
-        int   i32MiIll2  = atoi(pacFields[17]);
-        int   i32MiMois2 = atoi(pacFields[18]);
-        int   i32MiCond2 = atoi(pacFields[19]);
-        float fMiTemp3   = atof(pacFields[20]);
-        int   i32MiIll3  = atoi(pacFields[21]);
-        int   i32MiMois3 = atoi(pacFields[22]);
-        int   i32MiCond3 = atoi(pacFields[23]);
-        float fAirHum    = atof(pacFields[24]);
-        float fAirTemp   = atof(pacFields[25]);
-
-        i32Len = snprintf(pacBuf, uiBufSize,
-            "\"%lld\":{"
-              "\"EVENT\":\"%c\","
-              "\"BATT\":%.3f,\"SOL\":%.3f,\"TEMP\":%.1f,"
-              "\"HUM1\":%d,\"HUM2\":%d,\"HUM3\":%d,"
-              "\"LEV\":%d,\"ETY\":%d,\"CHRG\":%s,"
-              "\"MITEMP1\":%.1f,\"MIILL1\":%d,\"MIMOIS1\":%d,\"MICOND1\":%d,"
-              "\"MITEMP2\":%.1f,\"MIILL2\":%d,\"MIMOIS2\":%d,\"MICOND2\":%d,"
-              "\"MITEMP3\":%.1f,\"MIILL3\":%d,\"MIMOIS3\":%d,\"MICOND3\":%d,"
-              "\"AIRHUM\":%.1f,\"AIRTEMP\":%.1f"
-            "}",
-            llTime, cEvent,
-            fBatt, fSol, fTemp,
-            i32Hum1, i32Hum2, i32Hum3,
-            i32Lev, i32Ety, bChrg ? "true" : "false",
-            fMiTemp1, i32MiIll1, i32MiMois1, i32MiCond1,
-            fMiTemp2, i32MiIll2, i32MiMois2, i32MiCond2,
-            fMiTemp3, i32MiIll3, i32MiMois3, i32MiCond3,
-            fAirHum, fAirTemp);
+        if (sc_asColDefs[uiDef].e_type == COL_TYPE_TIME &&
+            pai8Map[uiDef] >= 0 && (uint8_t)pai8Map[uiDef] < ui8Cnt)
+        {
+            llTime = atoll(pacFields[(uint8_t)pai8Map[uiDef]]);
+            break;
+        }
     }
-    else if (ui8Cnt >= 24u)
-    {
-        // Nur Miflora (Felder 12-23), kein AHT20
-        float fMiTemp1   = atof(pacFields[12]);
-        int   i32MiIll1  = atoi(pacFields[13]);
-        int   i32MiMois1 = atoi(pacFields[14]);
-        int   i32MiCond1 = atoi(pacFields[15]);
-        float fMiTemp2   = atof(pacFields[16]);
-        int   i32MiIll2  = atoi(pacFields[17]);
-        int   i32MiMois2 = atoi(pacFields[18]);
-        int   i32MiCond2 = atoi(pacFields[19]);
-        float fMiTemp3   = atof(pacFields[20]);
-        int   i32MiIll3  = atoi(pacFields[21]);
-        int   i32MiMois3 = atoi(pacFields[22]);
-        int   i32MiCond3 = atoi(pacFields[23]);
+    if (llTime == 0LL) { return 0u; }
 
-        i32Len = snprintf(pacBuf, uiBufSize,
-            "\"%lld\":{"
-              "\"EVENT\":\"%c\","
-              "\"BATT\":%.3f,\"SOL\":%.3f,\"TEMP\":%.1f,"
-              "\"HUM1\":%d,\"HUM2\":%d,\"HUM3\":%d,"
-              "\"LEV\":%d,\"ETY\":%d,\"CHRG\":%s,"
-              "\"MITEMP1\":%.1f,\"MIILL1\":%d,\"MIMOIS1\":%d,\"MICOND1\":%d,"
-              "\"MITEMP2\":%.1f,\"MIILL2\":%d,\"MIMOIS2\":%d,\"MICOND2\":%d,"
-              "\"MITEMP3\":%.1f,\"MIILL3\":%d,\"MIMOIS3\":%d,\"MICOND3\":%d"
-            "}",
-            llTime, cEvent,
-            fBatt, fSol, fTemp,
-            i32Hum1, i32Hum2, i32Hum3,
-            i32Lev, i32Ety, bChrg ? "true" : "false",
-            fMiTemp1, i32MiIll1, i32MiMois1, i32MiCond1,
-            fMiTemp2, i32MiIll2, i32MiMois2, i32MiCond2,
-            fMiTemp3, i32MiIll3, i32MiMois3, i32MiCond3);
-    }
-    else if (ui8Cnt >= 14u)
-    {
-        // Ohne Miflora, aber mit AHT20 Luftfeuchte/Lufttemperatur (Felder 12-13)
-        float fAirHum  = atof(pacFields[12]);
-        float fAirTemp = atof(pacFields[13]);
+    size_t uiPos     = 0u;
+    bool   bOverflow = false;
+    bool   bFirst    = true;
 
-        i32Len = snprintf(pacBuf, uiBufSize,
-            "\"%lld\":{"
-              "\"EVENT\":\"%c\","
-              "\"BATT\":%.3f,\"SOL\":%.3f,\"TEMP\":%.1f,"
-              "\"HUM1\":%d,\"HUM2\":%d,\"HUM3\":%d,"
-              "\"LEV\":%d,\"ETY\":%d,\"CHRG\":%s,"
-              "\"AIRHUM\":%.1f,\"AIRTEMP\":%.1f"
-            "}",
-            llTime, cEvent,
-            fBatt, fSol, fTemp,
-            i32Hum1, i32Hum2, i32Hum3,
-            i32Lev, i32Ety, bChrg ? "true" : "false",
-            fAirHum, fAirTemp);
-    }
-    else
+#define APND(_fmt, ...) \
+    do { \
+        if (!bOverflow) { \
+            int _n = snprintf(pacBuf + uiPos, uiBufSize - uiPos, (_fmt), ##__VA_ARGS__); \
+            if (_n < 0 || (size_t)_n >= (uiBufSize - uiPos)) { bOverflow = true; } \
+            else { uiPos += (size_t)_n; } \
+        } \
+    } while (0)
+
+    APND("\"%lld\":{", llTime);
+
+    for (size_t uiDef = 0u; uiDef < PRV_COL_DEF_COUNT; uiDef++)
     {
-        // Nur Basisdaten (12 Felder)
-        i32Len = snprintf(pacBuf, uiBufSize,
-            "\"%lld\":{"
-              "\"EVENT\":\"%c\","
-              "\"BATT\":%.3f,\"SOL\":%.3f,\"TEMP\":%.1f,"
-              "\"HUM1\":%d,\"HUM2\":%d,\"HUM3\":%d,"
-              "\"LEV\":%d,\"ETY\":%d,\"CHRG\":%s"
-            "}",
-            llTime, cEvent,
-            fBatt, fSol, fTemp,
-            i32Hum1, i32Hum2, i32Hum3,
-            i32Lev, i32Ety, bChrg ? "true" : "false");
+        const prv_col_def_t *psDef = &sc_asColDefs[uiDef];
+        if (psDef->e_type == COL_TYPE_TIME || psDef->e_type == COL_TYPE_SKIP) { continue; }
+        if (pai8Map[uiDef] < 0 || (uint8_t)pai8Map[uiDef] >= ui8Cnt)         { continue; }
+
+        const char *pacVal = pacFields[(uint8_t)pai8Map[uiDef]];
+        if (!bFirst) { APND(","); }
+        bFirst = false;
+
+        switch (psDef->e_type)
+        {
+            case COL_TYPE_CHAR:
+                APND("\"%s\":\"%c\"", psDef->pac_json, pacVal[0]);
+                break;
+            case COL_TYPE_MV:
+                APND("\"%s\":%.3f", psDef->pac_json, (float)atoi(pacVal) / 1000.0f);
+                break;
+            case COL_TYPE_FLOAT1:
+                APND("\"%s\":%.1f", psDef->pac_json, atof(pacVal));
+                break;
+            case COL_TYPE_INT:
+                APND("\"%s\":%d", psDef->pac_json, atoi(pacVal));
+                break;
+            case COL_TYPE_BOOL:
+                APND("\"%s\":%s", psDef->pac_json, atoi(pacVal) != 0 ? "true" : "false");
+                break;
+            default:
+                break;
+        }
     }
 
-    if (i32Len < 0 || (size_t)i32Len >= uiBufSize) { return 0u; }
-    return (size_t)i32Len;
+    APND("}");
+
+#undef APND
+
+    if (bOverflow) { return 0u; }
+    return uiPos;
 }
 
 static size_t prv_csvWateringLineToJson(const char *pacLine, char *pacBuf, size_t uiBufSize)
@@ -376,16 +407,19 @@ esp_err_t data_getPeripherieLogData(char *pacBuf, size_t uiBufSize,
         return ESP_FAIL;
     }
 
-    char acLine[512];
+    char   acLine[512];
+    char   acHeader[512];
+    int8_t ai8ColMap[PRV_COL_DEF_COUNT];
 
-    /* Header überspringen */
-    if (fgets(acLine, sizeof(acLine), f) == NULL)
+    /* Header lesen und Spalten-Map aufbauen */
+    if (fgets(acHeader, sizeof(acHeader), f) == NULL)
     {
         ESP_LOGE(TAG, "Log-Datei leer");
         fclose(f);
         esp_vfs_spiffs_unregister(NULL);
         return ESP_FAIL;
     }
+    prv_buildColMap(acHeader, ai8ColMap);
 
     /* Bis Startzeile vorspulen */
     for (uint32_t ui32I = 0u; ui32I < ui32LineIdx; ui32I++)
@@ -424,6 +458,7 @@ esp_err_t data_getPeripherieLogData(char *pacBuf, size_t uiBufSize,
         }
 
         size_t uiWritten = prv_csvLineToJson(acLine,
+                                             ai8ColMap,
                                              pacBuf + uiPos,
                                              uiBufSize - uiPos - 1u);
         if (uiWritten == 0u)

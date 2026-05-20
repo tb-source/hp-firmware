@@ -228,6 +228,15 @@ esp_err_t storage_readCredentials(credentials_t *psCredentials)
         return eErr;
     }
 
+    uiLen = sizeof(psCredentials->devicePW);
+    eErr = nvs_get_str(hNvs, "devPW", psCredentials->devicePW, &uiLen);
+    if (eErr != ESP_OK && eErr != ESP_ERR_NVS_NOT_FOUND)
+    {
+        ESP_LOGE(TAG, "storage_readCredentials: devicePW lesen fehlgeschlagen: %s", esp_err_to_name(eErr));
+        nvs_close(hNvs);
+        return eErr;
+    }
+
     uiLen = sizeof(psCredentials->wifiSsid);
     eErr = nvs_get_str(hNvs, "wifiSsid", psCredentials->wifiSsid, &uiLen);
     if (eErr != ESP_OK && eErr != ESP_ERR_NVS_NOT_FOUND)
@@ -286,6 +295,14 @@ esp_err_t storage_writeCredentials(const credentials_t *psCredentials)
     if (eErr != ESP_OK)
     {
         ESP_LOGE(TAG, "storage_writeCredentials: deviceId schreiben fehlgeschlagen: %s", esp_err_to_name(eErr));
+        nvs_close(hNvs);
+        return eErr;
+    }
+
+    eErr = nvs_set_str(hNvs, "devPW", psCredentials->devicePW);
+    if (eErr != ESP_OK)
+    {
+        ESP_LOGE(TAG, "storage_writeCredentials: devicePW schreiben fehlgeschlagen: %s", esp_err_to_name(eErr));
         nvs_close(hNvs);
         return eErr;
     }
@@ -446,7 +463,7 @@ esp_err_t storage_writeBtVerifier(const uint8_t *pui8Verifier, size_t uiLen)
 
 esp_err_t storage_writeSelectorProperty(uint32_t ui32Channel, uint32_t ui32Angle)
 {
-    if (ui32Channel >= 4U) { return ESP_ERR_INVALID_ARG; }
+    if (ui32Channel >= (SELCOUNT * 4)) { return ESP_ERR_INVALID_ARG; }
 
     nvs_handle_t hNvs;
     esp_err_t eErr = nvs_open_from_partition(STORAGE_DEVICE, "device", NVS_READWRITE, &hNvs);

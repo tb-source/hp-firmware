@@ -6,6 +6,7 @@
  */
 #include "provisioning.h"
 #include "storage.h"
+#include "ble_miflora.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -30,9 +31,38 @@ static const char *TAG = "app";
 void bt_prov_reset(void);
 
 static deviceData_t s_peDevice_data;
+static volatile bool s_bProvRunning = false;
 
 static uint8_t s_aui8Sec2Salt[BT_SALT_LEN];
 static uint8_t s_aui8Sec2Verifier[BT_VERIFIER_LEN];
+
+static esp_err_t prv_prepare_bt_controller_for_provisioning(void)
+{
+    esp_bt_controller_status_t eStatus = esp_bt_controller_get_status();
+
+    if (eStatus == ESP_BT_CONTROLLER_STATUS_ENABLED)
+    {
+        esp_err_t eErr = esp_bt_controller_disable();
+        if (eErr != ESP_OK)
+        {
+            ESP_LOGE(TAG, "esp_bt_controller_disable failed: %s", esp_err_to_name(eErr));
+            return eErr;
+        }
+        eStatus = esp_bt_controller_get_status();
+    }
+
+    if (eStatus == ESP_BT_CONTROLLER_STATUS_INITED)
+    {
+        esp_err_t eErr = esp_bt_controller_deinit();
+        if (eErr != ESP_OK)
+        {
+            ESP_LOGE(TAG, "esp_bt_controller_deinit failed: %s", esp_err_to_name(eErr));
+            return eErr;
+        }
+    }
+
+    return ESP_OK;
+}
 
 static esp_err_t example_get_sec2_salt(const char **salt, uint16_t *salt_len) {
     if (salt == NULL || salt_len == NULL) {
@@ -113,8 +143,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 retries = 0;
                 break;
             case WIFI_PROV_END:
-                /* De-initialize manager once provisioning is finished */
-                wifi_prov_mgr_deinit();
+                /* Manager deinit is handled in bt_prov_cleanup */
                 break;
             default:
                 break;
@@ -134,6 +163,44 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
+        
+        /* Save WiFi credentials to storage */
+        wifi_config_t wifi_cfg;
+        esp_err_t eErr = esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
+        if (eErr == ESP_OK)
+        {
+            credentials_t sCredentials = {0};
+            
+            /* Read existing credentials */
+            eErr = storage_readCredentials(&sCredentials);
+            if (eErr != ESP_OK && eErr != ESP_ERR_NVS_NOT_FOUND)
+            {
+                ESP_LOGW(TAG, "Failed to read existing credentials: %s", esp_err_to_name(eErr));
+            }
+            
+            /* Update WiFi credentials */
+            strncpy(sCredentials.wifiSsid, (const char *)wifi_cfg.sta.ssid, sizeof(sCredentials.wifiSsid) - 1u);
+            sCredentials.wifiSsid[sizeof(sCredentials.wifiSsid) - 1u] = '\0';
+            
+            strncpy(sCredentials.wifiPassword, (const char *)wifi_cfg.sta.password, sizeof(sCredentials.wifiPassword) - 1u);
+            sCredentials.wifiPassword[sizeof(sCredentials.wifiPassword) - 1u] = '\0';
+            
+            /* Write updated credentials back to storage */
+            eErr = storage_writeCredentials(&sCredentials);
+            if (eErr == ESP_OK)
+            {
+                ESP_LOGI(TAG, "WiFi credentials saved to storage");
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Failed to save WiFi credentials: %s", esp_err_to_name(eErr));
+            }
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Failed to get WiFi config: %s", esp_err_to_name(eErr));
+        }
+        
         /* Signal main application to continue execution */
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_EVENT);
     } else if (event_base == PROTOCOMM_TRANSPORT_BLE_EVENT) {
@@ -144,7 +211,6 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 break;
             case PROTOCOMM_TRANSPORT_BLE_DISCONNECTED:
                 ESP_LOGI(TAG, "BLE transport: Disconnected!");
-                wifi_prov_mgr_deinit();
                 xEventGroupSetBits(wifi_event_group, BLE_DISCONNECTED);
                 break;
             default:
@@ -179,7 +245,7 @@ static void get_device_service_name(char *service_name, size_t max)
     // *service_name = "PROV_84EAE0"; // Example service name, replace with actual logic to generate unique name
     uint8_t eth_mac[6];
     const char *ssid_prefix = "PROV_";
-    const char *ssid_suffix = "84EAE0";
+    const char *ssid_suffix = "FDC6DC";
     snprintf(service_name, max, "%s%s", ssid_prefix, ssid_suffix);
     // esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
     // snprintf(service_name, max, "%s%02X%02X%02X",
@@ -194,15 +260,26 @@ static void get_device_service_name(char *service_name, size_t max)
 esp_err_t custom_prov_data_handler(uint32_t session_id, const uint8_t *inbuf, ssize_t inlen,
                                           uint8_t **outbuf, ssize_t *outlen, void *priv_data)
 {
-    if (inbuf) {
+    (void)session_id;
+    (void)priv_data;
+
+    *outbuf = NULL;
+    *outlen = 0;
+
+    if (inbuf && inlen > 0) {
         char acInputString[500];
-        // inputString
-        strncpy(acInputString,(char*)inbuf,inlen);
-        acInputString[inlen] = 0;   //null termiantion
-        ESP_LOGI(TAG, "Received data: %.*s", inlen, (char *)inbuf);
+        size_t uiInputLen = (size_t)inlen;
+        if (uiInputLen >= sizeof(acInputString)) {
+            uiInputLen = sizeof(acInputString) - 1U;
+            ESP_LOGW(TAG, "Provisioning payload truncated from %d to %d bytes", (int)inlen, (int)uiInputLen);
+        }
+
+        memcpy(acInputString, inbuf, uiInputLen);
+        acInputString[uiInputLen] = 0;
+
+        ESP_LOGI(TAG, "Received data: %.*s", (int)uiInputLen, acInputString);
         *outbuf = (uint8_t*)strdup(pacData_send_receive(acInputString, &s_peDevice_data));
-        *outlen = strlen((char *)*outbuf) + 1;   /* +1 for NULL terminating byte */
-        iTimeKeeper = 0;    //reste timeout detection
+        iTimeKeeper = 0;
     }
     else
     {
@@ -221,18 +298,58 @@ esp_err_t custom_prov_data_handler(uint32_t session_id, const uint8_t *inbuf, ss
 
 void bt_prov(deviceData_t* peDevice_data)
 {
+    bool bProvMgrInit = false;
+    esp_err_t eErr;
+
+    if (s_bProvRunning)
+    {
+        ESP_LOGW(TAG, "Provisioning already running, ignoring trigger");
+        return;
+    }
+    s_bProvRunning = true;
+
     led_set(1,LED_BLINK_SLOW);
     //set data 
     s_peDevice_data = *peDevice_data;
 
+    /* Ensure any optional MiFlora NimBLE lifecycle is stopped before
+     * starting BLE provisioning. */
+    esp_err_t eMifloraStop = ble_miflora_deinit();
+    if (eMifloraStop != ESP_OK)
+    {
+        ESP_LOGW(TAG, "ble_miflora_deinit before provisioning failed: %s", esp_err_to_name(eMifloraStop));
+    }
+
+    eErr = prv_prepare_bt_controller_for_provisioning();
+    if (eErr != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to prepare BT controller for provisioning: %s", esp_err_to_name(eErr));
+        goto bt_prov_cleanup;
+    }
+
     /* NVS bereits durch storage_init() initialisiert */
 
     /* Initialize TCP/IP (idempotent) */
-    esp_netif_init();
+    eErr = esp_netif_init();
+    if ((eErr != ESP_OK) && (eErr != ESP_ERR_INVALID_STATE))
+    {
+        ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(eErr));
+        goto bt_prov_cleanup;
+    }
 
     /* Initialize the event loop (ignoriere Fehler falls bereits erstellt) */
-    esp_event_loop_create_default();
+    eErr = esp_event_loop_create_default();
+    if ((eErr != ESP_OK) && (eErr != ESP_ERR_INVALID_STATE))
+    {
+        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(eErr));
+        goto bt_prov_cleanup;
+    }
     wifi_event_group = xEventGroupCreate();
+    if (wifi_event_group == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create wifi event group");
+        goto bt_prov_cleanup;
+    }
 
     /* Register our event handler for Wi-Fi, IP and Provisioning related events */
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
@@ -241,6 +358,19 @@ void bt_prov(deviceData_t* peDevice_data)
     ESP_ERROR_CHECK(esp_event_handler_register(PROTOCOMM_SECURITY_SESSION_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
+
+    /* Release Classic BT memory before WiFi init.
+     * This MUST be done before esp_wifi_init() to prevent heap corruption of
+     * the interrupt allocator's vector_desc_t linked list (seen as LoadProhibited
+     * in find_desc_for_source during hli_queue_setup when BT controller inits).
+     * Official ESP-IDF BLE+WiFi examples always release Classic BT memory first. */
+    {
+        esp_err_t eMemRel = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+        if (eMemRel != ESP_OK && eMemRel != ESP_ERR_INVALID_STATE)
+        {
+            ESP_LOGW(TAG, "esp_bt_controller_mem_release: %s", esp_err_to_name(eMemRel));
+        }
+    }
 
     /* Initialize Wi-Fi including netif with default config */
     static bool s_bNetifCreated = false;
@@ -274,6 +404,7 @@ void bt_prov(deviceData_t* peDevice_data)
     /* Initialize provisioning manager with the
      * configuration parameters set above */
     ESP_ERROR_CHECK(wifi_prov_mgr_init(config));
+    bProvMgrInit = true;
 
 
     bool provisioned = false;
@@ -303,10 +434,22 @@ void bt_prov(deviceData_t* peDevice_data)
          * must be valid till WIFI_PROV_END event is triggered.
          */
         wifi_prov_security2_params_t sec2_params = {};
+        const void *pvSecParams = &sec2_params;
 
-        ESP_ERROR_CHECK(example_get_sec2_salt(&sec2_params.salt, &sec2_params.salt_len));
-        ESP_ERROR_CHECK(example_get_sec2_verifier(&sec2_params.verifier, &sec2_params.verifier_len));
-        wifi_prov_security2_params_t *sec_params = &sec2_params;
+        eErr = example_get_sec2_salt(&sec2_params.salt, &sec2_params.salt_len);
+        if (eErr == ESP_OK)
+        {
+            eErr = example_get_sec2_verifier(&sec2_params.verifier, &sec2_params.verifier_len);
+        }
+
+        if (eErr != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to load Security2 params: %s", esp_err_to_name(eErr));
+            ESP_LOGE(TAG, "Security2 credentials are mandatory. Set $btSalt and $btVerifi via UART.");
+            wifi_prov_mgr_deinit();
+            bProvMgrInit = false;
+            goto bt_prov_cleanup;
+        }
 
         /* What is the service key (could be NULL)
          * This translates to :
@@ -333,10 +476,8 @@ void bt_prov(deviceData_t* peDevice_data)
             0xea, 0x4a, 0x82, 0x03, 0x04, 0x90, 0x1a, 0x02,
         };
 
-        /* If your build fails with linker errors at this point, then you may have
-         * forgotten to enable the BT stack or BTDM BLE settings in the SDK (e.g. see
-         * the sdkconfig.defaults in the example project) */
         wifi_prov_scheme_ble_set_service_uuid(custom_service_uuid);
+
         /* An optional endpoint that applications can create if they expect to
          * get some additional custom data during provisioning workflow.
          * The endpoint name can be anything of your choice.
@@ -347,12 +488,22 @@ void bt_prov(deviceData_t* peDevice_data)
          * so that we can restart it later. */
         wifi_prov_mgr_disable_auto_stop(1000);
         /* Start provisioning service */
-        ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, (const void *) sec_params, service_name, service_key));
+        eErr = wifi_prov_mgr_start_provisioning(security, pvSecParams, service_name, service_key);
+        if (eErr != ESP_OK)
+        {
+            ESP_LOGE(TAG, "wifi_prov_mgr_start_provisioning failed: %s", esp_err_to_name(eErr));
+            goto bt_prov_cleanup;
+        }
         /* The handler for the optional endpoint created above.
          * This call must be made after starting the provisioning, and only if the endpoint
          * has already been created above.
          */
-        wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler, NULL);
+        eErr = wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler, NULL);
+        if (eErr != ESP_OK)
+        {
+            ESP_LOGE(TAG, "wifi_prov_mgr_endpoint_register failed: %s", esp_err_to_name(eErr));
+            goto bt_prov_cleanup;
+        }
 
         /* Uncomment the following to wait for the provisioning to finish and then release
          * the resources of the manager. Since in this case de-initialization is triggered
@@ -368,6 +519,7 @@ void bt_prov(deviceData_t* peDevice_data)
         /* We don't need the manager as device is already provisioned,
          * so let's release it's resources */
         wifi_prov_mgr_deinit();
+        bProvMgrInit = false;
 
         /* Start Wi-Fi station */
         wifi_init_sta();
@@ -389,10 +541,16 @@ void bt_prov(deviceData_t* peDevice_data)
         vTaskDelay(1000);       //wait 1s
         iTimeKeeper++;
     }
+
+    bt_prov_cleanup:
+    
     led_set(1,LED_OFF);
     ESP_LOGI("PROV", "Disconnect");
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    wifi_prov_mgr_deinit();
+    if (bProvMgrInit)
+    {
+        wifi_prov_mgr_deinit();
+    }
 
     /* Event-Handler abmelden */
     esp_event_handler_unregister(WIFI_PROV_EVENT,                  ESP_EVENT_ANY_ID,    &event_handler);
@@ -412,20 +570,10 @@ void bt_prov(deviceData_t* peDevice_data)
     esp_wifi_stop();
     esp_wifi_deinit();
 
-    /* BT-Speicher freigeben (WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM
-     * deinitialisiert den Bluedroid-Stack automatisch – Controller prüfen) */
-    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED)
-    {
-        esp_bt_controller_disable();
-    }
-    if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE)
-    {
-        esp_bt_controller_deinit();
-    }
-    esp_bt_mem_release(ESP_BT_MODE_BTDM);
     // wifi_prov_mgr_reset_sm_state_for_reprovision(); 
     // xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, true, true, portMAX_DELAY);
     *peDevice_data = s_peDevice_data;
+    s_bProvRunning = false;
 }
 
 // void bt_prov_state()

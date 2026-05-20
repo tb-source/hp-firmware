@@ -13,8 +13,21 @@
 #include <stdint.h>
 #include "time.h"
 
-#define CHANNELCOUNT 3
+
 #define EVENTCOUNT 5
+
+#if CONFIG_PERIPHERY_VARIANT_LG
+#define CHANNELCOUNT 6
+#define PUMPCOUNT 2
+#define SELCOUNT 2
+#endif
+#if CONFIG_PERIPHERY_VARIANT_LH
+#define CHANNELCOUNT 3
+#define PUMPCOUNT 1
+#define SELCOUNT 1
+#endif
+
+
 
 typedef struct {
     int32_t amount;     //amout in ml

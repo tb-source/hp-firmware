@@ -27,6 +27,7 @@
 //storage data structure for credentials
 typedef struct {
     char deviceId[64];
+    char devicePW[64];
     char wifiSsid[64];
     char wifiPassword[64];
     char firebaseEmail[64];
@@ -42,7 +43,7 @@ typedef struct {
 //storage data structure for selector properties
 typedef struct
 {
-  uint32_t ui32Angle[4];
+  uint32_t ui32Angle[SELCOUNT * 4];
 } sel_prop_t;
 
 extern esp_err_t storage_init(void);

@@ -15,19 +15,57 @@ static const char *sc_acFilePaths[] = {
     "/spiffs/log_error.csv",
 };
 
-#ifdef MIFLORA_ENABLE
-static const char *sc_acHeadline[] = {
-    "time, message, logicVoltage, battVoltage, solVoltage, temperature, humidity 0, humidity 1, humidity 2, waterLevel, waterEmpty, chargeStatus, mifloraTemperature1, mifloraIlluminance1, mifloraMoisture1, mifloraConductivity1, mifloraTemperature2, mifloraIlluminance2, mifloraMoisture2, mifloraConductivity2, mifloraTemperature3, mifloraIlluminance3, mifloraMoisture3, mifloraConductivity3, airHumidity, airTemperature", 
-    "time, wateringChannel, wateringEvent, wateringAmount, humidity",
-    "time, errorTag, errorMessage",
-};
+/* Compose periphery CSV headline from feature defines in periphery headers. */
+#ifdef CAPHUMSENSE_ENABLE
+#define LOG_HDR_HUMIDITY ", humidity 0, humidity 1, humidity 2"
+#define LOG_HDR_WATER_EMPTY ", waterEmpty"
+#define LOG_HDR_WATER_LEVEL ", waterLevel"
+#define LOG_HDR_SEL ", selTouch"
+#define LOG_HDR_PUMP ", pumpTouch"
 #else
+#define LOG_HDR_HUMIDITY ""
+#define LOG_HDR_WATER_EMPTY ""
+#define LOG_HDR_WATER_LEVEL ""
+#define LOG_HDR_SEL ""
+#define LOG_HDR_PUMP ""
+#endif
+
+#ifdef MIFLORA_ENABLE
+#define LOG_HDR_MIFLORA \
+    ", mifloraTemperature1, mifloraIlluminance1, mifloraMoisture1, mifloraConductivity1" \
+    ", mifloraTemperature2, mifloraIlluminance2, mifloraMoisture2, mifloraConductivity2" \
+    ", mifloraTemperature3, mifloraIlluminance3, mifloraMoisture3, mifloraConductivity3"
+#else
+#define LOG_HDR_MIFLORA ""
+#endif
+
+#ifdef AHT20_ENABLE
+#define LOG_HDR_AHT20 ", airHumidity, airTemperature"
+#else
+#define LOG_HDR_AHT20 ""
+#endif
+
 static const char *sc_acHeadline[] = {
-    "time, message, logicVoltage, battVoltage, solVoltage, temperature, humidity 0, humidity 1, humidity 2, waterLevel, waterEmpty, chargeStatus", 
+    "time, message, logicVoltage, battVoltage, solVoltage, temperature"
+    LOG_HDR_HUMIDITY
+    LOG_HDR_WATER_LEVEL
+    LOG_HDR_WATER_EMPTY
+    LOG_HDR_SEL
+    LOG_HDR_PUMP
+    ", chargeStatus"
+    LOG_HDR_MIFLORA
+    LOG_HDR_AHT20,
     "time, wateringChannel, wateringEvent, wateringAmount, humidity",
     "time, errorTag, errorMessage",
 };
-#endif
+
+#undef LOG_HDR_HUMIDITY
+#undef LOG_HDR_WATER_EMPTY
+#undef LOG_HDR_WATER_LEVEL
+#undef LOG_HDR_SEL
+#undef LOG_HDR_PUMP
+#undef LOG_HDR_MIFLORA
+#undef LOG_HDR_AHT20
 
 static const char *sc_acMessageTypes[] = {
     "P",
@@ -262,57 +300,6 @@ void log_readData(log_type_t eType)
 //pack peripherie data for logging
 void log_peripherieData(miflora_data_t paFloraData[])
 {
-    // char data[64];
-    // char acdataString[64];
-
-    // //first entry -> time
-    // time_t tNow = time(NULL);        //64bits -> 8char
-    // data[0] = tNow >> 56;
-    // data[1] = tNow >> 48;
-    // data[2] = tNow >> 40;
-    // data[3] = tNow >> 32;
-    // data[4] = tNow >> 24;
-    // data[5] = tNow >> 16;
-    // data[6] = tNow >> 8;
-    // data[7] = tNow;
-
-    // //second entry -> message tag
-    // data[8] = 'P';  //L for log
-
-    // //second entry -> esp voltage
-    // uint32_t ui32LogicVoltage = ui32EspVolt_read();             //[mV]
-    // data[10] = ui32LogicVoltage >> 8;
-    // data[11] = ui32LogicVoltage;
-
-    // //third entry -> battery voltage
-    // uint32_t ui32BatteryVoltage = ui32BattVolt_read();             //[mV]
-    // data[12] = ui32BatteryVoltage >> 8;
-    // data[13] = ui32BatteryVoltage;
-
-    // //fourth entry -> solar voltage
-    // uint32_t ui32SolarVoltage = ui32SolarVolt_read();             //[mV]
-    // data[14] = ui32SolarVoltage >> 8;
-    // data[15] = ui32SolarVoltage;
-
-    // //fifth entry -> temperature sensing
-    // float fTemperature = fTemp_read() * 100;             //[°C/100]
-    // uint32_t ui32Temperature = (uint32_t)fTemperature;             //convert to int
-    // data[16] = ui32Temperature >> 8;
-    // data[17] = ui32Temperature;
-
-    // //sixth entry -> humidity sensing
-    // data[18] = ((ui32Humidity_count(0) - 9500 ) / 10) >> 24;
-    // data[19] = ((ui32Humidity_count(1) - 9500 ) / 10) >> 24;
-    // data[20] = ((ui32Humidity_count(2) - 9500 ) / 10) >> 24;
-
-    // //seventh entry -> water level
-    // uint32_t ui32WaterLevel = ui32Level_read();             //read water level
-    // data[21] = ui32WaterLevel >> 8;
-    // data[22] = ui32WaterLevel;
-
-    // sprintf(acdataString, "%s", data);
-    // ESP_LOGI(TAG, "Packed data: %s", acdataString);
-
     char acData[1024] = {0};
     size_t uiPos = 0u;
     bool bOverflow = false;
@@ -329,37 +316,41 @@ void log_peripherieData(miflora_data_t paFloraData[])
         } \
     } while (0)
 
-    // first entry -> time
+    //time
     APPEND_LOG("%lld,", (long long)time(NULL));
 
-    // second entry -> message tag
+    //message tag
     APPEND_LOG("%c,", 'P');
 
-    // third entry -> esp voltage
+    //esp voltage
     APPEND_LOG("%d,", (int)ui32EspVolt_read());
 
-    // fourth entry -> battery voltage
+    //battery voltage
     APPEND_LOG("%d,", (int)ui32BattVolt_read());
 
-    // fifth entry -> solar voltage
+    //solar voltage
     APPEND_LOG("%d,", (int)ui32SolarVolt_read());
 
-    // sixth entry -> temperature sensing
+    //temperature sensing
     APPEND_LOG("%.1f,", fTemp_read());
 
-    // seventh entry -> humidity sensing
+    #ifdef CAPHUMSENSE_ENABLE
+    //humidity sensing
     APPEND_LOG("%d,%d,%d,",
                (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM1,100),
                (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM2,100),
                (int)ui32AdcTouch_readPwmMux(PWM_MUX_HUM3,100));
-
-    // eighth entry -> water level
+    //water level
     APPEND_LOG("%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL,100));
-
-    // ninth entry -> water empty
+    //water empty
     APPEND_LOG("%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_TANKETY,100));
+    //selector current
+    APPEND_LOG("%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_SEL,100));
+    //pump current
+    APPEND_LOG("%d,", (int)ui32AdcTouch_readPwmMux(PWM_MUX_PUMP,100));
+    #endif
 
-    // tenth entry -> charge status
+    //charge status
     APPEND_LOG("%d,", (int)ui32Charge_read());
 
     #ifdef MIFLORA_ENABLE
@@ -381,15 +372,36 @@ void log_peripherieData(miflora_data_t paFloraData[])
     #endif
 
     // air humidity and temperature from AHT20
+    #ifdef AHT20_ENABLE
     ahtData_t sAhtData;
     if (AHT20_read(&sAhtData) == ESP_OK)
     {
         APPEND_LOG("%.1f,", sAhtData.humidity);
-        APPEND_LOG("%.1f\n", sAhtData.temperature);
+        APPEND_LOG("%.1f", sAhtData.temperature);
     }
     else
     {
-        APPEND_LOG("%s", "0,0\n");
+        APPEND_LOG("%s", "0,0");
+    }
+    #endif
+
+    if (!bOverflow && uiPos > 0u)
+    {
+        if (acData[uiPos - 1u] == ',')
+        {
+            uiPos--;
+            acData[uiPos] = '\0';
+        }
+
+        if (uiPos + 1u >= sizeof(acData))
+        {
+            bOverflow = true;
+        }
+        else
+        {
+            acData[uiPos++] = '\n';
+            acData[uiPos] = '\0';
+        }
     }
 
 #undef APPEND_LOG

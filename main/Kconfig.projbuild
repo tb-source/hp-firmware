@@ -1,0 +1,14 @@
+menu "Hardware Configuration"
+
+choice PERIPHERY_VARIANT
+    prompt "Periphery board variant"
+    default PERIPHERY_VARIANT_LG
+
+    config PERIPHERY_VARIANT_LG
+        bool "LG"
+
+    config PERIPHERY_VARIANT_LH
+        bool "LH"
+endchoice
+
+endmenu

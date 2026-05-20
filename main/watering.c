@@ -28,7 +28,7 @@ esp_err_t erUpdateServerData(deviceData_t* psDeviceData);
 void watering_init(void)
 {
     button_sleep_init();
-    xTaskCreate(button_task, "button1_event_task", 10000, NULL, 5, NULL);    										//1024 Create a task to handler button event from button state
+    xTaskCreate(button_task, "button1_event_task", 16384, NULL, 5, NULL);    										//1024 Create a task to handler button event from button state
 }
 
 deviceData_t eDeviceData_get(void){
@@ -129,8 +129,8 @@ void button_task(void)
             // deepSleep_activate(setTimeToNextEvent(&s_eWateringData) * 1000000);  //in µs - 100s   
 
             //moisture based watering event
-            //update data sync with server every 4h
-            static const time_t sc_tServerUpdateIntervalUnix = 4 * 60 * 60;       //4h in s -> 4 * 60 * 60
+            //update data sync with server every 1h
+            static const time_t sc_tServerUpdateIntervalUnix =  1 * 60 * 60;       //1h in s -> 1 * 60 * 60
             time_t tTimeAct;
             time(&tTimeAct);
             if ((s_tLastServerUpdateUnix == 0) || ((tTimeAct - s_tLastServerUpdateUnix) >= sc_tServerUpdateIntervalUnix))
@@ -156,8 +156,7 @@ void button_task(void)
 	        deepSleep_activate(20*60*1000000);		//log every 20 min data  
             led_set(1,LED_OFF);
             //proof watering data changed
-      
-            
+                  
 		}
         break;    
 
@@ -540,7 +539,6 @@ esp_err_t erWatering(wateringData_t* wateringData)
                                 volatile time_t tNextWatering;
                                 if(!bOverstepEvent)
                                 {
-
                                     //calc watering time quantity [ml/20] * pumpTimeFact
                                     const uint32_t ui32PumpTimeFact = (uint32_t)(0.4*1000);      //[ms/ml]
                                     const uint32_t ui32PumpPulseDuration = 5 * ui32PumpTimeFact + 500;     //5[ml] * ui32PumpTimeFact[ms/ml] + watering dead time (500ms)-> [ms] - pulse duration of watering cycles
@@ -552,7 +550,7 @@ esp_err_t erWatering(wateringData_t* wateringData)
                                         //check for no water in pot
                                         if(!bHumidity_check(i32ChanelCount + 1) || !bAvoidWaterlogging)
                                         {
-                                            pump_runTime(ui32WaterTime/(ui32WaterTime/ui32PumpPulseDuration), MOTOR_DIR_UP);    
+                                            pump_runTime(ui32WaterTime/(ui32WaterTime/ui32PumpPulseDuration), MOTOR_DIR_UP, 1);    
                                             ESP_LOGI("erWatering: ","No water in pot");
                                             ui32WateringDuration += ui32PumpPulseDuration;
                                             // vTaskDelay(10000);
@@ -575,7 +573,11 @@ esp_err_t erWatering(wateringData_t* wateringData)
                                 }
                                 else
                                 {
+                                    #ifndef CONFIG_PERIPHERY_VARIANT_LG
                                     log_wateringData(i32ChanelCount + 1, i32EventCount + 1, 0, ui32AdcTouch_readPwmMux(i32ChanelCount + 9, 100));
+                                    #else
+                                    log_wateringData(i32ChanelCount + 1, i32EventCount + 1, 0, 0);
+                                    #endif  
                                     //if water in pot -> time delay for next watering 1d
                                     tNextWatering = (*wateringData).wateringChannel[i32ChanelCount].wateringEvent[i32EventCount].wateringNextUnix + (24 * 60 * 60);      
                                 }
@@ -659,9 +661,14 @@ esp_err_t erWateringMoisture(wateringData_t* wateringData, deviceData_t* devData
                     if(errSelector == ERR_SEL_OK)
                     {
                         //calc watering time quantity [ml/20] * pumpTimeFact
+                        #if CONFIG_PERIPHERY_VARIANT_LG
+                        const uint32_t ui32PumpTimeFact = (uint32_t)(0.6*1000);      //[ms/ml]
+                        #else
                         const uint32_t ui32PumpTimeFact = (uint32_t)(0.4*1000);      //[ms/ml]
+                        #endif
                         const uint32_t ui32PumpPulseDuration = 5 * ui32PumpTimeFact + 500;     //5[ml] * ui32PumpTimeFact[ms/ml] + watering dead time (500ms)-> [ms] - pulse duration of watering cycles
                         uint32_t ui32WateringDuration = 0;
+                        bool bVertilizing = true;
 
                         while((paFloraData[ui32ChanelCount].moisture < channelData.moisture.maxMoisture))
                         {
@@ -673,7 +680,29 @@ esp_err_t erWateringMoisture(wateringData_t* wateringData, deviceData_t* devData
                                 break;
                             }
 
-                            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_UP);          //run pump for defined time
+                            #ifdef VERTILIZING_ENABLE 
+                            if(bVertilizing)
+                            {
+                                const uint32_t c_aui32VertAmount[3] = {0, 50, 100};            //[µl/l] - vertilizing amount for each channel
+                                const uint32_t ui32SoilTimeFact = (uint32_t)(2);      //[ms/µl]
+
+                                //make soil wet
+                                pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_DOWN, 1);          //run pump for defined time in vertilizing direction
+                                esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);    //wait 30s
+                                esp_light_sleep_start();
+                                pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_DOWN, 1);          //run pump for defined time in vertilizing direction
+                                esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);    //wait 30s
+                                esp_light_sleep_start();     
+
+                                //vertilize and flush out with clean water
+                                pump_runTimeOpenLoop(ui32SoilTimeFact * c_aui32VertAmount[ui32ChanelCount], MOTOR_DIR_UP, 2, 3000);          //run pump for defined time in vertilizing direction
+                                ui32WateringDuration += ui32PumpPulseDuration * 2;
+
+                                bVertilizing = false;
+                            }
+                            #endif
+
+                            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_UP, 1);          //run pump for defined time
                             ui32WateringDuration += ui32PumpPulseDuration;
                             esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);    //wait 30s
                             esp_light_sleep_start();

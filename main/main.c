@@ -11,8 +11,106 @@
 #include "log.h"
 #include "datamanagement.h"
 
+/*
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "nvs_flash.h"
+
+static void prv_wifiBasicScanTest(void)
+{
+	const char *TAG_WIFI_TEST = "WIFI_TEST";
+	esp_err_t eErr;
+
+	eErr = nvs_flash_init();
+	if (eErr == ESP_ERR_NVS_NO_FREE_PAGES || eErr == ESP_ERR_NVS_NEW_VERSION_FOUND)
+	{
+		ESP_ERROR_CHECK(nvs_flash_erase());
+		eErr = nvs_flash_init();
+	}
+	if (eErr != ESP_OK && eErr != ESP_ERR_INVALID_STATE)
+	{
+		ESP_LOGE(TAG_WIFI_TEST, "NVS init failed: %s", esp_err_to_name(eErr));
+		return;
+	}
+
+	eErr = esp_netif_init();
+	if (eErr != ESP_OK && eErr != ESP_ERR_INVALID_STATE)
+	{
+		ESP_LOGE(TAG_WIFI_TEST, "esp_netif_init failed: %s", esp_err_to_name(eErr));
+		return;
+	}
+
+	bool bEventLoopCreated = false;
+	eErr = esp_event_loop_create_default();
+	if (eErr == ESP_OK)
+	{
+		bEventLoopCreated = true;
+	}
+	else if (eErr != ESP_ERR_INVALID_STATE)
+	{
+		ESP_LOGE(TAG_WIFI_TEST, "event loop create failed: %s", esp_err_to_name(eErr));
+		return;
+	}
+
+	esp_netif_t *psStaNetif = esp_netif_create_default_wifi_sta();
+	if (psStaNetif == NULL)
+	{
+		ESP_LOGE(TAG_WIFI_TEST, "create default STA netif failed");
+		return;
+	}
+
+	wifi_init_config_t sCfg = WIFI_INIT_CONFIG_DEFAULT();
+	ESP_ERROR_CHECK(esp_wifi_init(&sCfg));
+	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+	ESP_ERROR_CHECK(esp_wifi_start());
+
+	wifi_scan_config_t sScanCfg = {0};
+	sScanCfg.show_hidden = true;
+
+	ESP_LOGI(TAG_WIFI_TEST, "Starting WiFi scan...");
+	ESP_ERROR_CHECK(esp_wifi_scan_start(&sScanCfg, true));
+
+	uint16_t ui16ApCount = 0u;
+	ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ui16ApCount));
+	ESP_LOGI(TAG_WIFI_TEST, "Scan done. AP count: %u", (unsigned)ui16ApCount);
+
+	wifi_ap_record_t asApRecords[20];
+	uint16_t ui16ToRead = ui16ApCount;
+	if (ui16ToRead > (uint16_t)(sizeof(asApRecords) / sizeof(asApRecords[0])))
+	{
+		ui16ToRead = (uint16_t)(sizeof(asApRecords) / sizeof(asApRecords[0]));
+	}
+
+	if (ui16ToRead > 0u)
+	{
+		ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&ui16ToRead, asApRecords));
+		for (uint16_t uiI = 0u; uiI < ui16ToRead; uiI++)
+		{
+			ESP_LOGI(TAG_WIFI_TEST,
+					 "AP[%u]: SSID='%s' RSSI=%d CH=%u AUTH=%d",
+					 (unsigned)uiI,
+					 (const char *)asApRecords[uiI].ssid,
+					 (int)asApRecords[uiI].rssi,
+					 (unsigned)asApRecords[uiI].primary,
+					 (int)asApRecords[uiI].authmode);
+		}
+	}
+
+	ESP_ERROR_CHECK(esp_wifi_stop());
+	ESP_ERROR_CHECK(esp_wifi_deinit());
+	esp_netif_destroy(psStaNetif);
+
+	if (bEventLoopCreated)
+	{
+		ESP_ERROR_CHECK(esp_event_loop_delete_default());
+	}
+}
+*/
+
 void app_main(void)
 {
+	
 	ESP_LOGE("NVS", "%s", esp_err_to_name(storage_init()));
 	led_init();
 	adcTouch_init();
@@ -20,10 +118,20 @@ void app_main(void)
 	i2c_init();	
 	bPowerstage_init();
 
+
+
 	// humidity_init();
 	// touch_init1();
 
-	watering_init();
+	#if CONFIG_PERIPHERY_VARIANT_LG
+	debug_init();
+	if (gpio_get_level(PIN_DEBUG) == 1)
+	{
+		watering_init();
+	}
+	#else
+	watering_init();	
+	#endif
 
   	// RTCExt_getUnixTime();        //uncommented
 	// log_peripherieData();
@@ -32,8 +140,6 @@ void app_main(void)
 	// ble_miflora_init();
 	// ble_miflora_sniff(5000);		//sniff for 10s
 	// ble_miflora_deinit();
-	
-
 
 	// WakeUpCause_test();
 

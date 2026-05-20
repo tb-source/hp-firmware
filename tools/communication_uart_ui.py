@@ -4,7 +4,7 @@ Full UART desktop tool for communication.c commands.
 
 Covers:
 - $ protocol commands (set/get):
-  devID, wifiSsid, wifiPw, fbEmail, fbPw, btSalt, btVerifi, selPos
+    devID, devPW, wifiSsid, wifiPw, fbEmail, fbPw, btSalt, btVerifi, selPos
 - Security2 salt/verifier generation from username/password (ESP-IDF SRP6a)
 - Legacy one-byte and multi-byte commands handled in testFunction()
 - Raw ASCII and raw hex send for full flexibility
@@ -252,6 +252,7 @@ class App(tk.Tk):
 
         self.fields: dict[str, tk.StringVar] = {
             "devID": tk.StringVar(),
+            "devPW": tk.StringVar(),
             "wifiSsid": tk.StringVar(),
             "wifiPw": tk.StringVar(),
             "fbEmail": tk.StringVar(),
@@ -331,7 +332,7 @@ class App(tk.Tk):
         fields = ttk.LabelFrame(parent, text="Set/Get Fields")
         fields.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        ids = ["devID", "wifiSsid", "wifiPw", "fbEmail", "fbPw", "btSalt", "btVerifi"]
+        ids = ["devID", "devPW", "wifiSsid", "wifiPw", "fbEmail", "fbPw", "btSalt", "btVerifi"]
         for idx, ident in enumerate(ids):
             ttk.Label(fields, text=ident).grid(row=idx, column=0, padx=5, pady=4, sticky="w")
             width = 92 if ident != "btVerifi" else 100

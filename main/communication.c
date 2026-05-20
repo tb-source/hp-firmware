@@ -3,6 +3,8 @@
  *
  *  Created on: 04.12.2021
  *      Author: tobby
+ * 
+ * OPEN TOOL FOR COMMUNICATION WITH EXTERNAL DEVICES IN TERMINAL: py tools\communication_uart_ui.py
  */
 
 #include "communication.h"
@@ -246,6 +248,8 @@ static void prv_handleDollarCmd(const uint8_t *pucData)
     /* --- selPos --- */
     if (strncmp(acId, "selPos", 6u) == 0)
     {
+        const uint32_t ui32SelPosCount = (uint32_t)(SELCOUNT * 4u);
+
         if (cDir == '>')
         {
             char *pcEndChannel = NULL;
@@ -255,7 +259,7 @@ static void prv_handleDollarCmd(const uint8_t *pucData)
             bool bOk = false;
 
             if (acId[6] != '\0' && pcEndChannel != NULL && *pcEndChannel == '\0' &&
-                pcEndAngle != NULL && *pcEndAngle == '\0' && ulChannel < 4UL)
+                pcEndAngle != NULL && *pcEndAngle == '\0' && ulChannel < (unsigned long)ui32SelPosCount)
             {
                 bOk = (storage_writeSelectorProperty((uint32_t)ulChannel, (uint32_t)ulAngle) == ESP_OK);
             }
@@ -269,12 +273,38 @@ static void prv_handleDollarCmd(const uint8_t *pucData)
             esp_err_t eErr = storage_readSelectorProperty(&sSelProp);
             if (eErr == ESP_OK || eErr == ESP_ERR_NVS_NOT_FOUND)
             {
-                snprintf(acResp, sizeof(acResp), "selPosOK:%lu,%lu,%lu,%lu\n",
-                         (unsigned long)sSelProp.ui32Angle[0],
-                         (unsigned long)sSelProp.ui32Angle[1],
-                         (unsigned long)sSelProp.ui32Angle[2],
-                         (unsigned long)sSelProp.ui32Angle[3]);
-                prv_uartSend(acResp);
+                char acSelResp[16u + (SELCOUNT * 4u * 12u)];
+                size_t uiPos = 0u;
+                bool bOk = true;
+
+                int i32Len = snprintf(acSelResp, sizeof(acSelResp), "selPosOK:");
+                if (i32Len < 0 || (size_t)i32Len >= sizeof(acSelResp))
+                {
+                    bOk = false;
+                }
+                else
+                {
+                    uiPos = (size_t)i32Len;
+                }
+
+                for (uint32_t uiI = 0u; bOk && uiI < ui32SelPosCount; uiI++)
+                {
+                    i32Len = snprintf(acSelResp + uiPos,
+                                      sizeof(acSelResp) - uiPos,
+                                      "%lu%s",
+                                      (unsigned long)sSelProp.ui32Angle[uiI],
+                                      (uiI + 1u < ui32SelPosCount) ? "," : "\n");
+                    if (i32Len < 0 || (size_t)i32Len >= (sizeof(acSelResp) - uiPos))
+                    {
+                        bOk = false;
+                    }
+                    else
+                    {
+                        uiPos += (size_t)i32Len;
+                    }
+                }
+
+                prv_uartSend(bOk ? acSelResp : "selPosERR\n");
             }
             else
             {
@@ -299,6 +329,26 @@ static void prv_handleDollarCmd(const uint8_t *pucData)
         else
         {
             snprintf(acResp, sizeof(acResp), "devIDOK:%s\n", sCred.deviceId);
+            prv_uartSend(acResp);
+        }
+        return;
+    }
+
+    /* --- devPW --- */
+    if (strcmp(acId, "devPW") == 0)
+    {
+        credentials_t sCred;
+        memset(&sCred, 0, sizeof(sCred));
+        storage_readCredentials(&sCred);
+        if (cDir == '>')
+        {
+            strncpy(sCred.devicePW, acValue, sizeof(sCred.devicePW) - 1u);
+            bool bOk = (storage_writeCredentials(&sCred) == ESP_OK);
+            prv_uartSend(bOk ? "devPWOK\n" : "devPWERR\n");
+        }
+        else
+        {
+            snprintf(acResp, sizeof(acResp), "devPWOK:%s\n", sCred.devicePW);
             prv_uartSend(acResp);
         }
         return;
@@ -461,7 +511,7 @@ void testFunction(uint8_t* pacData)
 			// ESP_ERROR_CHECK(gpio_set_level(PIN_SEL1_EN, 1));        		//enable driver
 			// vTaskDelay(100);		//wait for capacitors loaded
 			// TLV_init();				//init TLV sensor
-			selector_setAngle((*(pacData + 1))*2, false);
+			selector_setAngle((*(pacData + 1))*2, false, (*(pacData + 2)));
 			// ESP_ERROR_CHECK(gpio_set_level(PIN_SEL1_EN, 0));        		//enable driver
 			// TLV_deinit();
 		}
@@ -493,7 +543,9 @@ void testFunction(uint8_t* pacData)
 
 		case 'w':
 		{
+            #if PWM_MUX_TANKLVL
 			ESP_LOGI(TAGA, "DATA: %ld", ui32AdcTouch_readPwmMux(PWM_MUX_TANKLVL, 100));
+            #endif
 			// uint32_t ui32Position = (uint32_t)(*(pacData + 1));
 //	        ESP_LOGI(TAGA, "DATA: %d", ui32Position_read());
 			// selector_set(ui32Position);
@@ -502,32 +554,58 @@ void testFunction(uint8_t* pacData)
 
 		case 'y':
 		{
+            #ifdef CAPHUMSENSE_ENABLE
 			ESP_LOGI(TAGA, "DATA: %ld", ui32AdcTouch_readPwmMux((adc_mux_t)(*(pacData + 1)), 500));
+            #endif
 		}
 		break;
 
 		case 'z':
 		{
-			deepSleep_activate(1000*10000000);		//1000s
+            #ifdef VERTILIZING_ENABLE 
+            const uint32_t ui32PumpTimeFact = (uint32_t)(0.6*1000);      //[ms/ml]
+            const uint32_t ui32PumpPulseDuration = 5 * ui32PumpTimeFact + 500;     //5[ml] * ui32PumpTimeFact[ms/ml] + watering dead time (500ms)-> [ms] - pulse duration of watering cycles
+
+            const uint32_t ui32SoilTimeFact = (uint32_t)(2);      //[ms/µl]
+
+            //make soil wet
+            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_DOWN, 1);          //run pump for defined time in vertilizing direction
+            esp_sleep_enable_timer_wakeup(10 * 1000 * 1000);    //wait 10s
+            esp_light_sleep_start();
+            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_DOWN, 1);          //run pump for defined time in vertilizing direction
+            esp_sleep_enable_timer_wakeup(10 * 1000 * 1000);    //wait 10s
+            esp_light_sleep_start();     
+
+            //vertilize
+            pump_runTimeOpenLoop(ui32SoilTimeFact * 50U, MOTOR_DIR_UP, 2, 3000);          //run pump for defined time in vertilizing direction
+
+            //and flush with clear water
+            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_DOWN, 1);          //run pump for defined time in vertilizing direction
+            #endif
 		}
 		break;
 
 		case 'h':
 		{
+            #if FDC1004_ENABLE
 			ESP_LOGI("Humidity", "Capacitance: %f", (float)FDC_getCap((uint32_t)(*(pacData + 1))) / 524288.0);
+            #endif
 		}
 		break;
 
 		case 'f':
 		{
+            #if PWM_MUX_TANKLVL
 			ESP_LOGI("LEVEL", "ui32Level_readMl: %d", (int)ui32Level_readMl());
-
+            #endif
 		}
 		break;
 
 		case 'g':
 		{
-			ESP_LOGI("LEVEL", "ui32Level_readPerc: %d", (int)ui32Level_readPerc());
+            int32_t i32LevelPerc;
+            erLevel_readPerc(&i32LevelPerc);
+			ESP_LOGI("LEVEL", "erLevel_readPerc: %d", (int)i32LevelPerc);
 		}
 		break;
 
@@ -535,23 +613,50 @@ void testFunction(uint8_t* pacData)
 		{
 			uint32_t ui32Time = (uint32_t)(*(pacData + 1))*100;
 			uint32_t ui32Direction = (uint32_t)(*(pacData + 2));
-			// selector_runTime(ui32Time, ui32Direction);
-		}
-		break;
+
+			// select            
+            #ifdef VERTILIZING_ENABLE 
+            const uint32_t ui32PumpTimeFact = (uint32_t)(0.6*1000);      //[ms/ml]
+            const uint32_t ui32PumpPulseDuration = 5 * ui32PumpTimeFact + 500;     //5[ml] * ui32PumpTimeFact[ms/ml] + watering dead time (500ms)-> [ms] - pulse duration of watering cycles
+
+            const uint32_t ui32SoilTimeFact = (uint32_t)(2);      //[ms/µl]
+
+            //make soil wet
+            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_DOWN, 1);          //run pump for defined time in vertilizing direction
+            esp_sleep_enable_timer_wakeup(10 * 1000 * 1000);    //wait 10s
+            esp_light_sleep_start();
+            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_DOWN, 1);          //run pump for defined time in vertilizing direction
+            esp_sleep_enable_timer_wakeup(10 * 1000 * 1000);    //wait 10s
+            esp_light_sleep_start();     
+
+            //vertilize
+            pump_runTimeOpenLoop(ui32SoilTimeFact * 50U, MOTOR_DIR_UP, 2, 3000);          //run pump for defined time in vertilizing direction
+
+            //and flush with clear water
+            pump_runTime(ui32PumpPulseDuration, MOTOR_DIR_DOWN, 1);          //run pump for defined time in vertilizing direction
+            #endif
+        }
+
+        break;
 
 		case 's':
 		{
 			// bPowerstage_init();
 			uint32_t ui32Time = (uint32_t)(*(pacData + 1))*100;
-			uint32_t ui32Direction = (uint32_t)(*(pacData + 2));;
-			pump_runTime(ui32Time, ui32Direction);
+			uint32_t ui32Direction = (uint32_t)(*(pacData + 2));
+            uint32_t ui32PumpNb = (uint32_t)(*(pacData + 3));
+			pump_runTime(ui32Time, ui32Direction, ui32PumpNb);
 		}
 		break;
 
 		case 'x':
 		{
-			// bPowerstage_init();
-			// deepSleep_activate();
+            #ifdef HX710_ENABLE
+            int32_t i32Pressure;
+			ui32HX710_read(&i32Pressure);
+            #else
+            ESP_LOGI("ui32HX710_read", "Sensor not supported");
+            #endif
 		}
 		break;
 
@@ -566,9 +671,9 @@ void testFunction(uint8_t* pacData)
 
 		case '2':
 		{
-			// uint32_t ui32Data;
-			// storage_read("test", &ui32Data);
-	        // ESP_LOGI(TAGS, "DATA: %c", (int)ui32Data);
+            #ifdef VERTILIZING_ENABLE
+            pump_runTimeOpenLoop(200, MOTOR_DIR_UP, 2, 3000);          //run pump for defined time in vertilizing direction
+            #endif
 		}
 		break;
 
@@ -606,5 +711,10 @@ void testFunction(uint8_t* pacData)
 			ble_miflora_deinit();
 		}
 		break;
+
+        case 'e':
+        {
+            led_set((*(pacData + 1)), (led_status_t)(*(pacData + 2)));
+        }
 	}
 }

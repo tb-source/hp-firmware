@@ -257,6 +257,7 @@ void RTCExt_setUnixTime(void)
     ESP_ERROR_CHECK(i2c_master_transmit(pcf_dev_handle, buffer, sizeof(buffer), 300));
 }
 
+#if (PIN_PWM_MUX_EN && PIN_ADC_MUX_EN && PIN_ADCMUX1 && PIN_ADCMUX2 && PIN_ADCMUX3)
 //init fdc1004
 void FDC_init(uint8_t ui8Channel){
 	// static bool bFDCinit = false;
@@ -344,7 +345,10 @@ uint32_t FDC_getCap(uint8_t ui8Channel)
     ESP_LOGI("FDC", "Get humidity data: %f", (float)meas_data/524288.0);
     return meas_data;
 }
+#endif
 
+
+#ifdef AHT20_ENABLE
 esp_err_t AHT20_softReset(void)
 {
     AHT20_init();
@@ -426,3 +430,5 @@ esp_err_t AHT20_read(ahtData_t *data)
 
     return ESP_OK;
 }
+
+#endif
