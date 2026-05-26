@@ -498,12 +498,13 @@ void bt_prov(deviceData_t* peDevice_data)
          * This call must be made after starting the provisioning, and only if the endpoint
          * has already been created above.
          */
-        eErr = wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler, NULL);
-        if (eErr != ESP_OK)
-        {
-            ESP_LOGE(TAG, "wifi_prov_mgr_endpoint_register failed: %s", esp_err_to_name(eErr));
-            goto bt_prov_cleanup;
-        }
+
+        // eErr = wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler, NULL);
+        // if (eErr != ESP_OK)
+        // {
+        //     ESP_LOGE(TAG, "wifi_prov_mgr_endpoint_register failed: %s", esp_err_to_name(eErr));
+        //     goto bt_prov_cleanup;
+        // }
 
         /* Uncomment the following to wait for the provisioning to finish and then release
          * the resources of the manager. Since in this case de-initialization is triggered
@@ -565,7 +566,7 @@ void bt_prov(deviceData_t* peDevice_data)
         wifi_event_group = NULL;
     }
 
-    /* WiFi stoppen damit firestore_wifiConnect() sauber neu starten kann */
+    /* WiFi stoppen damit der naechste WiFi-Connect sauber neu starten kann */
     esp_wifi_disconnect();
     esp_wifi_stop();
     esp_wifi_deinit();

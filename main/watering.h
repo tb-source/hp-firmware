@@ -21,7 +21,7 @@
 #include "storage.h"
 #include "datamanagement.h"
 #include "helper.h"
-#include "firestore.h"
+#include "supabase.h"
 
 extern deviceData_t g_sDeviceData;
 extern void watering_init(void);

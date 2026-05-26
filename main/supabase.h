@@ -2,29 +2,37 @@
 #define SUPABASE_H
 
 #include <stddef.h>
+#include <stdbool.h>
+#include "esp_err.h"
+#include "types.h"
+#include "storage.h"
 
-// Function to initialize Supabase server
-int server_init(const char *url, const char *key);
+/* Supabase Edge Function endpoint (GET config + POST status). */
+#define SUPABASE_EDGE_URL "https://mfzpmltlrivvoztuhjkc.supabase.co/functions/v1/esp-device"
 
-// Function to authenticate with Supabase
-int server_authenticate(const char *email, const char *password);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-// Function to add data to Supabase
-int server_add_data(const char *table, const char *data);
+esp_err_t supabase_get_config(const credentials_t *psCredentials,
+							  deviceData_t *psDeviceData,
+							  char *pacResponseBuf,
+							  size_t uiResponseBufSize,
+							  int *piHttpStatus);
 
-// Function to write data to Supabase
-int server_write_data(const char *table, const char *json_data);
+esp_err_t supabase_wifiConnect(const char *pacSsid, const char *pacPassword);
+esp_err_t supabase_wifiDisconnect(void);
 
-// Function to get data from Supabase
-char *server_get_data(const char *table, const char *query);
+esp_err_t supabase_post_status(const credentials_t *psCredentials,
+							   const deviceData_t *psDeviceData,
+							   const char *pacFirmwareVersion,
+							   bool *pbUpdated,
+							   char *pacResponseBuf,
+							   size_t uiResponseBufSize,
+							   int *piHttpStatus);
 
-// Function to read data from Supabase
-int server_read_data(const char *table, const char *query, char *response, size_t response_size);
+#ifdef __cplusplus
+}
+#endif
 
-// Function to update data in Supabase
-int server_update_data(const char *table, const char *query, const char *new_data);
-
-// Function to delete data from Supabase
-int server_delete_data(const char *table, const char *query);
-
-#endif // SUPABASE_H
+#endif

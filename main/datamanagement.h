@@ -11,7 +11,6 @@
 #include "types.h"
 #include <esp_err.h>
 #include "cJSON.h"
-#include "firestore.h"
 #include "storage.h"
 #include "log.h"
 #include "periphery.h"
@@ -63,35 +62,5 @@ esp_err_t data_getWateringLogData(char *pacBuf, size_t uiBufSize,
  */
 esp_err_t data_getErrorLogData(char *pacBuf, size_t uiBufSize,
                                uint32_t ui32LineIdx, uint32_t ui32Count);
-
-/**
- * @brief Parst einen JSON-String mit Channel-Daten und füllt ein channelData_t-Array.
- *
- * @param pacJson     JSON-String im Format {"CH1":{...},"CH2":{...},"CH3":{...}}.
- * @param psChannels  Zeiger auf channelData_t-Array (mind. ui8Count Einträge).
- * @param ui8Count    Anzahl zu füllender Kanäle (üblicherweise CHANNELCOUNT = 3).
- * @return            ESP_OK, ESP_FAIL, ESP_ERR_INVALID_ARG.
- */
-esp_err_t data_setChannelData(const char *pacJson, channelData_t *psChannels);
-
-/**
- * @brief Serialisiert ein channelData_t-Array in einen JSON-String.
- *        Inverse von data_setChannelData().
- *
- * Ausgabe-Format: {"CH1":{"EN":true,"FREQ":1,"NAME":"...","HUM":{"MIN":0,"MAX":0,"SENS":false,"MAC":"00:00:00:00:00:00"},"EVENTS":{...}},...}
- *
- * @param psChannels  Zeiger auf channelData_t-Array (CHANNELCOUNT Einträge).
- * @param pacBuf      Ausgabepuffer.
- * @param uiBufSize   Größe des Puffers in Bytes.
- * @return            ESP_OK, ESP_ERR_NO_MEM, ESP_ERR_INVALID_ARG, ESP_FAIL.
- */
-esp_err_t data_getChannelData(const channelData_t *psChannels, char *pacBuf, size_t uiBufSize);
-
-/**
- * @brief Gibt den Inhalt einer deviceData_t-Struktur über ESP_LOGI aus.
- *
- * @param psData  Zeiger auf die Gerätedaten.
- */
-void data_logDeviceData(const deviceData_t *psData);
 
 #endif /* MAIN_DATAMANAGEMENT_H_ */

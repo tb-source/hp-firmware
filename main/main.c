@@ -7,7 +7,6 @@
 #include "ble_miflora.h"
 #include "storage.h"
 #include "helper.h"
-#include "firestore.h"
 #include "log.h"
 #include "datamanagement.h"
 

@@ -21,7 +21,6 @@ void i2c_init()
     if (!s_bIICInit)
     {
         ESP_LOGI("I2C", "I2C_init");
-        ESP_LOGI("I2C", "0");
         vTaskDelay(100);
         i2c_master_bus_config_t i2c_mst_config = 
         {
@@ -33,10 +32,9 @@ void i2c_init()
             .flags.enable_internal_pullup = false,
         };
 
-        ESP_LOGI("I2C", "1");
         vTaskDelay(100);
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &bus_handle));   
-        ESP_LOGI("I2C", "2");
+
         vTaskDelay(100);
         //init tlv dev handle
         i2c_device_config_t dev_cfg = 
@@ -46,7 +44,6 @@ void i2c_init()
             .scl_speed_hz = 100000,
         };
         ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &tlv_dev_handle));
-        ESP_LOGI("I2C", "3");
 
         //init pcf dev handle
         dev_cfg.device_address = PCF8563_ADDR;

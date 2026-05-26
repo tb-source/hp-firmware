@@ -115,7 +115,7 @@ void ble_miflora_setChannelData(const deviceData_t *psDevData)
     for (uint32_t uiI = 0u; uiI < CHANNELCOUNT; uiI++)
     {
         const channelData_t *psChannel = &psDevData->channels[uiI];
-        g_sensor_enabled[uiI] = psChannel->moisture.senseEnable;
+        g_sensor_enabled[uiI] = psChannel->moisture.senseEnabled;
 
         const uint8_t *pui8Mac = psChannel->moisture.macTable;
         if (prv_isMacValid(pui8Mac))

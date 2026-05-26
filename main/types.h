@@ -27,7 +27,13 @@
 #define SELCOUNT 1
 #endif
 
-
+typedef enum
+{
+  WATYPE_UNKNOWN = 0,           //watering not defined
+  WATYPE_TIMEBASED = 1,         //watering at fixed times
+  WATYPE_MOISTUREBASED = 2,     //watering based on moisture level
+  WATYPE_AIBASED = 3,       //watering based on AI prediction (not implemented yet)
+} wateringType_t;
 
 typedef struct {
     int32_t amount;     //amout in ml
@@ -36,27 +42,24 @@ typedef struct {
 } eventData_t;
 
 typedef struct {
-    bool senseEnable;
+    bool senseEnabled;
     uint8_t macTable[6];
     int32_t maxMoisture;   //max moisture in 0-100%
     int32_t minMoisture;   //min moisture in 0-100%
+    int32_t maxAmount;     //max watering amount in ml/day
 } moistureData_t;
 
 typedef struct {
-    char name[100];
-    bool enable;
+    bool enabled;
+    wateringType_t wateringType;
     int32_t frequency;
     moistureData_t moisture;
     eventData_t events[EVENTCOUNT];
 } channelData_t;
 
 typedef struct{
-    int32_t id;
-    char name[100];
-    char status[20];
-    int32_t battery;            //[mv]
+    int32_t batteryLevel;       //[mv]
     int32_t temperature;        //[°C/10]
-    int32_t wateringtype;       //0=keine Bewässerung, 1=Bewässerung nach Zeitplan, 2=Bewässerung nach Feuchtigkeit
     channelData_t channels[CHANNELCOUNT];
 } deviceData_t;
 
@@ -65,8 +68,8 @@ typedef struct{
     time_t wateringLastUnix;
     time_t wateringNextUnix;
     time_t wateringFreqUnix;
-    uint32_t wateringAmount;        //watering amount in ml*20
-    uint32_t wateringAmountLast;        //watering amount last in ml*20
+    uint32_t wateringAmount;        //watering amount in ml
+    uint32_t wateringAmountLast;        //watering amount last in ml
 } wateringTime_t;
 
 typedef struct{
@@ -88,5 +91,6 @@ typedef struct {
     char     firmware[8];
     bool     valid;
 } miflora_data_t;
+
 
 #endif /* MAIN_TYPES_H_ */

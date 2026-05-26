@@ -22,5 +22,7 @@
         "esp_log.h": "c"
     },
     "idf.pythonInstallPath": "c:\\Users\\TBret\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
-    "idf.currentSetup": "C:\\Users\\TBret\\esp\\v5.2.1\\esp-idf"
+    "idf.currentSetup": "C:\\Users\\TBret\\esp\\v5.2.1\\esp-idf",
+    "typescript.validate.enable": false,
+    "javascript.validate.enable": false
 }

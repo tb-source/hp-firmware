@@ -7,6 +7,7 @@
 
 
 #include "log.h"
+#include <stdarg.h>
 
 static const char *TAG = "LOG";
 static const char *sc_acFilePaths[] = {
@@ -46,7 +47,7 @@ static const char *sc_acFilePaths[] = {
 #endif
 
 static const char *sc_acHeadline[] = {
-    "time, message, logicVoltage, battVoltage, solVoltage, temperature"
+    "time, message, logicVoltage, battLevel, solVoltage, temperature"
     LOG_HDR_HUMIDITY
     LOG_HDR_WATER_LEVEL
     LOG_HDR_WATER_EMPTY
@@ -325,8 +326,8 @@ void log_peripherieData(miflora_data_t paFloraData[])
     //esp voltage
     APPEND_LOG("%d,", (int)ui32EspVolt_read());
 
-    //battery voltage
-    APPEND_LOG("%d,", (int)ui32BattVolt_read());
+    //battery level
+    APPEND_LOG("%d,", (int)ui32BattLevel_read());
 
     //solar voltage
     APPEND_LOG("%d,", (int)ui32SolarVolt_read());
@@ -445,20 +446,33 @@ void log_wateringData(uint32_t ui32WateringChannel, uint32_t ui32WateringEvent, 
 }
 
 //pack error data for logging
-void log_errorData(log_error_type_t eErrorType, char* pacErrorMessage)
+void log_errorData(log_error_type_t eErrorType, const char *pacErrorFormat, ...)
 {
-    char acData[128] = {0};;
-    char acAppendData[64] = {0};
+    char acMessage[160] = {0};
+    char acData[256] = {0};
+    va_list args;
 
-    // Pack data for logging
-    sprintf(acAppendData, "%lld,", (long long)time(NULL));
-    strcat(acData, acAppendData);
+    if (pacErrorFormat == NULL)
+    {
+        pacErrorFormat = "";
+    }
 
-    sprintf(acAppendData, "%s,", sc_acErrorTypes[eErrorType]);
-    strcat(acData, acAppendData);
+    va_start(args, pacErrorFormat);
+    (void)vsnprintf(acMessage, sizeof(acMessage), pacErrorFormat, args);
+    va_end(args);
 
-    sprintf(acAppendData, "%s\n", pacErrorMessage);
-    strcat(acData, acAppendData);
+    const char *pacErrorTag = "Unknown";
+    if ((int)eErrorType >= 0 && (int)eErrorType < (int)(sizeof(sc_acErrorTypes) / sizeof(sc_acErrorTypes[0])))
+    {
+        pacErrorTag = sc_acErrorTypes[eErrorType];
+    }
+
+    (void)snprintf(acData,
+                   sizeof(acData),
+                   "%lld,%s,%s\n",
+                   (long long)time(NULL),
+                   pacErrorTag,
+                   acMessage);
 
     // Save packed data to file
     log_saveData(acData, LOG_TYPE_ERROR);

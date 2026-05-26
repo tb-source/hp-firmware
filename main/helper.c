@@ -15,281 +15,497 @@
 
 static const char *TAG = "json";
 
-//parse JSON device data
-esp_err_t data_convert_read(deviceData_t* device_data, char* json_data) {
+static void prv_format_mac_string(const uint8_t aui8Mac[6], char *pacBuf, size_t uiBufSize)
+{
+    if (aui8Mac == NULL || pacBuf == NULL || uiBufSize == 0u)
+    {
+        return;
+    }
 
-	esp_err_t err = ESP_OK;
-    cJSON *root = cJSON_Parse(json_data);
+    snprintf(pacBuf,
+             uiBufSize,
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             aui8Mac[0],
+             aui8Mac[1],
+             aui8Mac[2],
+             aui8Mac[3],
+             aui8Mac[4],
+             aui8Mac[5]);
+}
 
-    if (root) {
+static void prv_set_channel_defaults(deviceData_t *psDeviceData)
+{
+    for (int32_t i = 0; i < CHANNELCOUNT; i++)
+    {
+        channelData_t *psChannel = &psDeviceData->channels[i];
+        memset(psChannel, 0, sizeof(*psChannel));
+        psChannel->enabled = false;
+    }
+}
 
-        cJSON *device = cJSON_GetObjectItem(root, "device");
-        cJSON *time = cJSON_GetObjectItem(root, "time");
+static wateringType_t prv_watering_type_from_text(const char *pacText)
+{
+    if (pacText == NULL)
+    {
+        return WATYPE_UNKNOWN;
+    }
+    if (strcmp(pacText, "timebased") == 0)
+    {
+        return WATYPE_TIMEBASED;
+    }
+    if (strcmp(pacText, "moisturebased") == 0)
+    {
+        return WATYPE_MOISTUREBASED;
+    }
+    if (strcmp(pacText, "aibased") == 0)
+    {
+        return WATYPE_AIBASED;
+    }
+    return WATYPE_UNKNOWN;
+}
 
-        if (device){
-            (*device_data).id = (int32_t)cJSON_GetObjectItem(device, "id")->valueint;
-            strncpy((*device_data).name , cJSON_GetObjectItem(device, "name")->valuestring, sizeof((*device_data).name ) - 1);
-            (*device_data).name[sizeof((*device_data).name) - 1] = '\0';
-            strncpy((*device_data).status , cJSON_GetObjectItem(device, "status")->valuestring, sizeof((*device_data).status ) - 1);
-            (*device_data).status[sizeof((*device_data).status) - 1] = '\0';
-            (*device_data).battery = cJSON_GetObjectItem(device, "battery")->valueint;
-            (*device_data).temperature = cJSON_GetObjectItem(device, "temperature")->valueint;
+const char *prv_watering_type_to_text(wateringType_t eType)
+{
+    switch (eType)
+    {
+        case WATYPE_TIMEBASED: return "timebased";
+        case WATYPE_MOISTUREBASED: return "moisturebased";
+        case WATYPE_AIBASED: return "aibased";
+        case WATYPE_UNKNOWN:
+        default:
+            return "unknown";
+    }
+}
 
-            cJSON *wateringtype = cJSON_GetObjectItem(device, "wateringtype");
-            if (cJSON_IsNumber(wateringtype))
+static bool prv_parse_hh_mm(const char *pacTime, int32_t *pi32Hour, int32_t *pi32Minute)
+{
+    int iHour = 0;
+    int iMinute = 0;
+
+    if (pacTime == NULL || pi32Hour == NULL || pi32Minute == NULL)
+    {
+        return false;
+    }
+
+    if (sscanf(pacTime, "%d:%d", &iHour, &iMinute) != 2)
+    {
+        return false;
+    }
+
+    if (iHour < 0 || iHour > 23 || iMinute < 0 || iMinute > 59)
+    {
+        return false;
+    }
+
+    *pi32Hour = (int32_t)iHour;
+    *pi32Minute = (int32_t)iMinute;
+    return true;
+}
+
+esp_err_t deviceDataJson_parse(deviceData_t *psDeviceData, const char *pacJson, bool bSyncTime)
+{
+    cJSON *psRoot = NULL;
+    cJSON *psDevice = NULL;
+
+    if (psDeviceData == NULL || pacJson == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    psRoot = cJSON_Parse(pacJson);
+    if (psRoot == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    {
+        cJSON *psOk = cJSON_GetObjectItem(psRoot, "ok");
+        if ((psOk != NULL) && !cJSON_IsTrue(psOk))
+        {
+            cJSON_Delete(psRoot);
+            return ESP_FAIL;
+        }
+    }
+
+    if (bSyncTime)
+    {
+        time_t tTimeToApply = 0;
+        cJSON *psTime = cJSON_GetObjectItem(psRoot, "time");
+
+        if (cJSON_IsNumber(psTime) && psTime->valuedouble > 1000000000.0)
+        {
+            tTimeToApply = (time_t)psTime->valuedouble;
+        }
+        else if (cJSON_IsObject(psTime))
+        {
+            cJSON *psAct = cJSON_GetObjectItem(psTime, "act");
+            if (cJSON_IsNumber(psAct) && psAct->valuedouble > 1000000000.0)
             {
-                (*device_data).wateringtype = wateringtype->valueint;
+                tTimeToApply = (time_t)psAct->valuedouble;
             }
+        }
 
-            ESP_LOGI(TAG, "Device id: %d", (int)(*device_data).id);
-            ESP_LOGI(TAG, "Device name: %s", (*device_data).name);
-            ESP_LOGI(TAG, "Device status: %s", (*device_data).status);
-            ESP_LOGI(TAG, "Device batVolt: %d", (int)(*device_data).battery);
-            ESP_LOGI(TAG, "Device temp: %d", (int)(*device_data).temperature);
-            ESP_LOGI(TAG, "Device wateringtype: %d", (int)(*device_data).wateringtype);
+        if (tTimeToApply > 0)
+        {
+            struct timeval sTime = {0};
+            sTime.tv_sec = tTimeToApply;
+            sTime.tv_usec = 0;
+            settimeofday(&sTime, NULL);
+        }
+    }
 
-            cJSON *channels = cJSON_GetObjectItem(device, "channels");
-            memset((*device_data).channels, 0, sizeof((*device_data).channels));
+    psDevice = cJSON_GetObjectItem(psRoot, "device");
+    if (!cJSON_IsObject(psDevice))
+    {
+        cJSON_Delete(psRoot);
+        return ESP_ERR_INVALID_ARG;
+    }
 
-            if (cJSON_IsArray(channels)) {
-                int num_channels = cJSON_GetArraySize(channels);
+    {
+        cJSON *psBatteryLevel = cJSON_GetObjectItem(psDevice, "batteryLevel");
+        cJSON *psTemperature = cJSON_GetObjectItem(psDevice, "temperature");
+        cJSON *psChannels = cJSON_GetObjectItem(psDevice, "channels");
 
-                for (int i = 0; i < num_channels && i < CHANNELCOUNT; i++) {
-                    //manage channel data
-                    cJSON *channel = cJSON_GetArrayItem(channels, i);
-                    strncpy((*device_data).channels[i].name, cJSON_GetObjectItem(channel, "name")->valuestring, sizeof((*device_data).channels[i].name) - 1);
-                    (*device_data).channels[i].name[sizeof((*device_data).channels[i].name) - 1] = '\0';
-                    (*device_data).channels[i].enable = cJSON_IsTrue(cJSON_GetObjectItem(channel, "enable"));
-                    // (*device_data).channels[i].duration = cJSON_GetObjectItem(channel, "duration")->valueint;
-                    (*device_data).channels[i].frequency = cJSON_GetObjectItem(channel, "frequency")->valueint;
+        if (cJSON_IsNumber(psBatteryLevel))
+        {
+            psDeviceData->batteryLevel = psBatteryLevel->valueint;
+        }
+        if (cJSON_IsNumber(psTemperature))
+        {
+            psDeviceData->temperature = psTemperature->valueint;
+        }
 
-                    cJSON *moisture = cJSON_GetObjectItem(channel, "moisture");
-                    if (cJSON_IsObject(moisture))
+        prv_set_channel_defaults(psDeviceData);
+
+        if (cJSON_IsArray(psChannels))
+        {
+            int iChannelCount = cJSON_GetArraySize(psChannels);
+
+            for (int i = 0; i < iChannelCount; i++)
+            {
+                cJSON *psChannel = cJSON_GetArrayItem(psChannels, i);
+                cJSON *psNumber = NULL;
+                channelData_t *psChannelData = NULL;
+                int iChannelIndex = i;
+
+                if (!cJSON_IsObject(psChannel))
+                {
+                    continue;
+                }
+
+                psNumber = cJSON_GetObjectItem(psChannel, "number");
+                if (cJSON_IsNumber(psNumber))
+                {
+                    iChannelIndex = psNumber->valueint - 1;
+                }
+
+                if (iChannelIndex < 0 || iChannelIndex >= CHANNELCOUNT)
+                {
+                    continue;
+                }
+
+                psChannelData = &psDeviceData->channels[iChannelIndex];
+
+                {
+                    cJSON *psEnabled = cJSON_GetObjectItem(psChannel, "enabled");
+                    cJSON *psFrequency = cJSON_GetObjectItem(psChannel, "frequency");
+                    cJSON *psChannelWateringType = cJSON_GetObjectItem(psChannel, "wateringType");
+                    cJSON *psMoisture = cJSON_GetObjectItem(psChannel, "moisture");
+                    cJSON *psEvents = cJSON_GetObjectItem(psChannel, "events");
+
+                    if (cJSON_IsBool(psEnabled))
                     {
-                        cJSON *senseEnable = cJSON_GetObjectItem(moisture, "senseEnable");
-                        cJSON *maxMoisture = cJSON_GetObjectItem(moisture, "maxMoisture");
-                        cJSON *minMoisture = cJSON_GetObjectItem(moisture, "minMoisture");
-                        cJSON *macTable = cJSON_GetObjectItem(moisture, "macTable");
+                        psChannelData->enabled = cJSON_IsTrue(psEnabled);
+                    }
 
-                        if (!cJSON_IsBool(senseEnable)) { senseEnable = cJSON_GetObjectItem(moisture, "SENS"); }
-                        if (!cJSON_IsNumber(maxMoisture)) { maxMoisture = cJSON_GetObjectItem(moisture, "MAX"); }
-                        if (!cJSON_IsNumber(minMoisture)) { minMoisture = cJSON_GetObjectItem(moisture, "MIN"); }
-                        if (!(cJSON_IsArray(macTable) || cJSON_IsString(macTable))) { macTable = cJSON_GetObjectItem(moisture, "MAC"); }
+                    if (cJSON_IsNumber(psFrequency))
+                    {
+                        psChannelData->frequency = psFrequency->valueint;
+                    }
 
-                        if (cJSON_IsBool(senseEnable))
-                        {
-                            (*device_data).channels[i].moisture.senseEnable = cJSON_IsTrue(senseEnable);
-                        }
-                        else if (cJSON_IsNumber(senseEnable))
-                        {
-                            (*device_data).channels[i].moisture.senseEnable = (senseEnable->valueint != 0);
-                        }
+                    if (cJSON_IsString(psChannelWateringType) && psChannelWateringType->valuestring != NULL)
+                    {
+                        psChannelData->wateringType = prv_watering_type_from_text(psChannelWateringType->valuestring);
+                    }
+                    else if (cJSON_IsNumber(psChannelWateringType))
+                    {
+                        psChannelData->wateringType = (wateringType_t)psChannelWateringType->valueint;
+                    }
 
-                        if (cJSON_IsNumber(maxMoisture))
-                        {
-                            (*device_data).channels[i].moisture.maxMoisture = maxMoisture->valueint;
-                        }
-                        if (cJSON_IsNumber(minMoisture))
-                        {
-                            (*device_data).channels[i].moisture.minMoisture = minMoisture->valueint;
-                        }
+                    if (cJSON_IsObject(psMoisture))
+                    {
+                        cJSON *psSenseEnabled = cJSON_GetObjectItem(psMoisture, "senseEnabled");
+                        cJSON *psMin = cJSON_GetObjectItem(psMoisture, "minMoisture");
+                        cJSON *psMax = cJSON_GetObjectItem(psMoisture, "maxMoisture");
+                        cJSON *psMaxAmount = cJSON_GetObjectItem(psMoisture, "maxAmount");
+                        cJSON *psMacTable = cJSON_GetObjectItem(psMoisture, "macTable");
 
-                        memset((*device_data).channels[i].moisture.macTable, 0, sizeof((*device_data).channels[i].moisture.macTable));
-                        if (cJSON_IsArray(macTable) && cJSON_GetArraySize(macTable) == 6)
+                        if (cJSON_IsBool(psSenseEnabled)) { psChannelData->moisture.senseEnabled = cJSON_IsTrue(psSenseEnabled); }
+                        if (cJSON_IsNumber(psMin)) { psChannelData->moisture.minMoisture = psMin->valueint; }
+                        if (cJSON_IsNumber(psMax)) { psChannelData->moisture.maxMoisture = psMax->valueint; }
+                        if (cJSON_IsNumber(psMaxAmount)) { psChannelData->moisture.maxAmount = psMaxAmount->valueint; }
+
+                        memset(psChannelData->moisture.macTable, 0, sizeof(psChannelData->moisture.macTable));
+                        if (cJSON_IsArray(psMacTable) && cJSON_GetArraySize(psMacTable) == 6)
                         {
                             for (int k = 0; k < 6; k++)
                             {
-                                cJSON *macByte = cJSON_GetArrayItem(macTable, k);
-                                if (cJSON_IsNumber(macByte) && macByte->valueint >= 0 && macByte->valueint <= 255)
+                                cJSON *psMacByte = cJSON_GetArrayItem(psMacTable, k);
+                                if (cJSON_IsNumber(psMacByte) && psMacByte->valueint >= 0 && psMacByte->valueint <= 255)
                                 {
-                                    (*device_data).channels[i].moisture.macTable[k] = (uint8_t)macByte->valueint;
-                                }
-                            }
-                        }
-                        else if (cJSON_IsString(macTable) && macTable->valuestring != NULL)
-                        {
-                            unsigned int auiMac[6] = {0};
-                            if (sscanf(macTable->valuestring, "%2x:%2x:%2x:%2x:%2x:%2x",
-                                       &auiMac[0], &auiMac[1], &auiMac[2], &auiMac[3], &auiMac[4], &auiMac[5]) == 6)
-                            {
-                                for (int k = 0; k < 6; k++)
-                                {
-                                    (*device_data).channels[i].moisture.macTable[k] = (uint8_t)auiMac[k];
+                                    psChannelData->moisture.macTable[k] = (uint8_t)psMacByte->valueint;
                                 }
                             }
                         }
                     }
 
-                    //printing channel data
-                    ESP_LOGI(TAG, "Name: %s", (*device_data).channels[i].name);
-                    ESP_LOGI(TAG, "Enable: %s", (*device_data).channels[i].enable ? "true" : "false");
-                    ESP_LOGI(TAG, "Frequency: %d", (int)(*device_data).channels[i].frequency);
-                    ESP_LOGI(TAG, "Moisture senseEnable: %s", (*device_data).channels[i].moisture.senseEnable ? "true" : "false");
-                    ESP_LOGI(TAG, "Moisture min/max: %d/%d",
-                             (int)(*device_data).channels[i].moisture.minMoisture,
-                             (int)(*device_data).channels[i].moisture.maxMoisture);
-
-                    //manage watering event data
-                    for (int j = 0; j < EVENTCOUNT; j++)
+                    memset(psChannelData->events, 0, sizeof(psChannelData->events));
+                    if (cJSON_IsArray(psEvents))
                     {
-                        (*device_data).channels[i].events[j].amount = 0;
-                        (*device_data).channels[i].events[j].hour = 0;
-                        (*device_data).channels[i].events[j].minute = 0;
-                    }
-                    
-                    cJSON *events = cJSON_GetObjectItem(channel, "events");
-                    if (cJSON_IsArray(events)) {
-                    int num_events = cJSON_GetArraySize(events);
+                        int iEventCount = cJSON_GetArraySize(psEvents);
+                        for (int j = 0; j < iEventCount && j < EVENTCOUNT; j++)
+                        {
+                            cJSON *psEvent = cJSON_GetArrayItem(psEvents, j);
+                            cJSON *psAmount = NULL;
+                            cJSON *psHour = NULL;
+                            cJSON *psMinute = NULL;
+                            cJSON *psTime = NULL;
 
-                        for (int j = 0; j < num_events && j < EVENTCOUNT; j++) {
-                            cJSON *event = cJSON_GetArrayItem(events, j);
-                            (*device_data).channels[i].events[j].amount = cJSON_GetObjectItem(event, "amount")->valueint;
-
-                            cJSON *hourItem = cJSON_GetObjectItem(event, "hour");
-                            cJSON *minuteItem = cJSON_GetObjectItem(event, "minute");
-                            cJSON *timeItem = cJSON_GetObjectItem(event, "time");
-
-                            if (cJSON_IsNumber(hourItem))
+                            if (!cJSON_IsObject(psEvent))
                             {
-                                (*device_data).channels[i].events[j].hour = hourItem->valueint;
-                            }
-                            if (cJSON_IsNumber(minuteItem))
-                            {
-                                (*device_data).channels[i].events[j].minute = minuteItem->valueint;
+                                continue;
                             }
 
-                            if (cJSON_IsNumber(timeItem) && !cJSON_IsNumber(hourItem))
+                            psAmount = cJSON_GetObjectItem(psEvent, "amount");
+                            psHour = cJSON_GetObjectItem(psEvent, "hour");
+                            psMinute = cJSON_GetObjectItem(psEvent, "minute");
+                            psTime = cJSON_GetObjectItem(psEvent, "time");
+                            if (!cJSON_IsString(psTime) && !cJSON_IsNumber(psTime))
                             {
-                                (*device_data).channels[i].events[j].hour = timeItem->valueint;
+                                psTime = cJSON_GetObjectItem(psEvent, "TIME");
                             }
-                            else if (cJSON_IsString(timeItem) && timeItem->valuestring != NULL)
+
+                            if (cJSON_IsNumber(psAmount))
                             {
-                                int iHour = 0;
-                                int iMinute = 0;
-                                if (sscanf(timeItem->valuestring, "%d:%d", &iHour, &iMinute) == 2)
+                                psChannelData->events[j].amount = psAmount->valueint;
+                            }
+                            if (cJSON_IsNumber(psHour))
+                            {
+                                psChannelData->events[j].hour = psHour->valueint;
+                            }
+                            if (cJSON_IsNumber(psMinute))
+                            {
+                                psChannelData->events[j].minute = psMinute->valueint;
+                            }
+
+                            if (cJSON_IsNumber(psTime) && !cJSON_IsNumber(psHour))
+                            {
+                                psChannelData->events[j].hour = psTime->valueint;
+                            }
+                            else if (cJSON_IsString(psTime) && psTime->valuestring != NULL)
+                            {
+                                int32_t iHour = 0;
+                                int32_t iMinute = 0;
+                                if (prv_parse_hh_mm(psTime->valuestring, &iHour, &iMinute))
                                 {
-                                    (*device_data).channels[i].events[j].hour = iHour;
-                                    (*device_data).channels[i].events[j].minute = iMinute;
+                                    psChannelData->events[j].hour = iHour;
+                                    psChannelData->events[j].minute = iMinute;
                                 }
                             }
-
-                            //Printing event data
-                            ESP_LOGI(TAG, "Amount: %d", (int)(*device_data).channels[i].events[j].amount);
-                            ESP_LOGI(TAG, "Time: %02d:%02d",
-                                     (int)(*device_data).channels[i].events[j].hour,
-                                     (int)(*device_data).channels[i].events[j].minute);
                         }
                     }
                 }
             }
         }
-        else{
-            err = ESP_ERR_INVALID_ARG;
-        }
-
-        if (time)
-        {
-
-            struct timeval sTime;
-            cJSON *timeObject = cJSON_GetObjectItem(time, "act");
-            if(timeObject)
-            {
-                sTime.tv_sec = timeObject->valuedouble;
-                sTime.tv_usec = 0;
-                ESP_LOGI(TAG, "Time: %lld", sTime.tv_sec);
-                settimeofday(&sTime, NULL);                
-            }
-
-        } 
-        else 
-        {
-            err = ESP_ERR_INVALID_ARG;
-        }
-        cJSON_Delete(root);
-
-    } else {
-        err = ESP_ERR_INVALID_ARG;
     }
 
-    return err;
+    cJSON_Delete(psRoot);
+    return ESP_OK;
 }
 
-
-//write JSON device data
-char* data_convert_write(deviceData_t device_data)
+char *deviceDataJson_serialize(const deviceData_t *psDeviceData)
 {
-    char* string = NULL;
+    cJSON *psTop = NULL;
+    cJSON *psDevice = NULL;
+    cJSON *psChannels = NULL;
+    char *pacOut = NULL;
 
-    // Create cJSON object for the device
-    cJSON *device = cJSON_CreateObject();
-    cJSON_AddItemToObject(device,"id", cJSON_CreateNumber(device_data.id));
-    cJSON_AddItemToObject(device,"name", cJSON_CreateString(device_data.name));
-    cJSON_AddItemToObject(device,"status", cJSON_CreateString(device_data.status));
-    cJSON_AddItemToObject(device,"battery", cJSON_CreateNumber(device_data.battery));
-    cJSON_AddItemToObject(device,"temperature", cJSON_CreateNumber(device_data.temperature));
-    cJSON_AddItemToObject(device,"wateringtype", cJSON_CreateNumber(device_data.wateringtype));
-
-    // Create cJSON object for a new channel
-    cJSON *channels = cJSON_AddArrayToObject(device,"channels");
-
-    for (int32_t channelIndex = 0; channelIndex < CHANNELCOUNT; ++channelIndex)
+    if (psDeviceData == NULL)
     {
-        cJSON *newChannel = cJSON_CreateObject();
-        cJSON_AddItemToObject(newChannel, "name", cJSON_CreateString(device_data.channels[channelIndex].name));
-        if (device_data.channels[channelIndex].enable){
-           cJSON_AddItemToObject(newChannel, "enable", cJSON_CreateTrue());
-        }
-        else{
-            cJSON_AddItemToObject(newChannel, "enable", cJSON_CreateFalse());
-        }
-        // cJSON_AddItemToObject(newChannel, "duration", cJSON_CreateNumber(device_data.channels[index].duration));
-        cJSON_AddItemToObject(newChannel, "frequency", cJSON_CreateNumber(device_data.channels[channelIndex].frequency));
+        return NULL;
+    }
 
-        cJSON *moisture = cJSON_AddObjectToObject(newChannel, "moisture");
-        cJSON_AddItemToObject(moisture, "senseEnable", cJSON_CreateBool(device_data.channels[channelIndex].moisture.senseEnable));
-        cJSON_AddItemToObject(moisture, "maxMoisture", cJSON_CreateNumber(device_data.channels[channelIndex].moisture.maxMoisture));
-        cJSON_AddItemToObject(moisture, "minMoisture", cJSON_CreateNumber(device_data.channels[channelIndex].moisture.minMoisture));
-        cJSON *macTable = cJSON_AddArrayToObject(moisture, "macTable");
-        for (int32_t macIndex = 0; macIndex < 6; macIndex++)
+    psTop = cJSON_CreateObject();
+    psDevice = cJSON_CreateObject();
+    psChannels = cJSON_CreateArray();
+    if (psTop == NULL || psDevice == NULL || psChannels == NULL)
+    {
+        cJSON_Delete(psTop);
+        cJSON_Delete(psDevice);
+        cJSON_Delete(psChannels);
+        return NULL;
+    }
+
+    cJSON_AddItemToObject(psTop, "device", psDevice);
+    cJSON_AddNumberToObject(psDevice, "batteryLevel", psDeviceData->batteryLevel);
+    cJSON_AddNumberToObject(psDevice, "temperature", psDeviceData->temperature);
+    cJSON_AddItemToObject(psDevice, "channels", psChannels);
+
+    for (int32_t i = 0; i < CHANNELCOUNT; i++)
+    {
+        cJSON *psChannel = cJSON_CreateObject();
+        cJSON *psMoisture = cJSON_CreateObject();
+        cJSON *psEvents = cJSON_CreateArray();
+        const channelData_t *psSource = &psDeviceData->channels[i];
+
+        if (psChannel == NULL || psMoisture == NULL || psEvents == NULL)
         {
-            cJSON_AddItemToArray(macTable, cJSON_CreateNumber(device_data.channels[channelIndex].moisture.macTable[macIndex]));
+            cJSON_Delete(psTop);
+            return NULL;
         }
 
-        // Create cJSON object for a new channel
-        cJSON *events = cJSON_AddArrayToObject(newChannel,"events");
-        for (int32_t eventIndex = 0; eventIndex < EVENTCOUNT; ++eventIndex)
+        cJSON_AddItemToArray(psChannels, psChannel);
+        cJSON_AddNumberToObject(psChannel, "number", i + 1);
+        cJSON_AddBoolToObject(psChannel, "enabled", psSource->enabled);
+        cJSON_AddNumberToObject(psChannel, "wateringType", psSource->wateringType);
+        cJSON_AddNumberToObject(psChannel, "frequency", psSource->frequency);
+
+        cJSON_AddItemToObject(psChannel, "moisture", psMoisture);
+        cJSON_AddBoolToObject(psMoisture, "senseEnabled", psSource->moisture.senseEnabled);
+        cJSON_AddNumberToObject(psMoisture, "minMoisture", psSource->moisture.minMoisture);
+        cJSON_AddNumberToObject(psMoisture, "maxMoisture", psSource->moisture.maxMoisture);
+        cJSON_AddNumberToObject(psMoisture, "maxAmount", psSource->moisture.maxAmount);
         {
-            if ((eventIndex == 0) || (device_data.channels[channelIndex].events[eventIndex].amount > 0))
+            cJSON *psMacTable = cJSON_AddArrayToObject(psMoisture, "macTable");
+            for (int32_t k = 0; k < 6; k++)
             {
-                cJSON *newEvent = cJSON_CreateObject();
-                cJSON_AddItemToObject(newEvent, "amount", cJSON_CreateNumber(device_data.channels[channelIndex].events[eventIndex].amount));
-                cJSON_AddItemToObject(newEvent, "hour", cJSON_CreateNumber(device_data.channels[channelIndex].events[eventIndex].hour));
-                cJSON_AddItemToObject(newEvent, "minute", cJSON_CreateNumber(device_data.channels[channelIndex].events[eventIndex].minute));
-
-                char acTime[8] = {0};
-                snprintf(acTime, sizeof(acTime), "%02d:%02d",
-                         (int)device_data.channels[channelIndex].events[eventIndex].hour,
-                         (int)device_data.channels[channelIndex].events[eventIndex].minute);
-                cJSON_AddItemToObject(newEvent, "time", cJSON_CreateString(acTime));
-                cJSON_AddItemToArray(events, newEvent);
+                cJSON_AddItemToArray(psMacTable, cJSON_CreateNumber(psSource->moisture.macTable[k]));
             }
         }
 
-        cJSON_AddItemToArray(channels, newChannel);
+        cJSON_AddItemToObject(psChannel, "events", psEvents);
+        for (int32_t j = 0; j < EVENTCOUNT; j++)
+        {
+            const eventData_t *psEvent = &psSource->events[j];
+            if ((j != 0) && (psEvent->amount <= 0))
+            {
+                continue;
+            }
+
+            cJSON *psEventJson = cJSON_CreateObject();
+            if (psEventJson == NULL)
+            {
+                cJSON_Delete(psTop);
+                return NULL;
+            }
+
+            cJSON_AddItemToArray(psEvents, psEventJson);
+            cJSON_AddNumberToObject(psEventJson, "amount", psEvent->amount);
+
+            {
+                char acTime[8] = {0};
+                snprintf(acTime, sizeof(acTime), "%02ld:%02ld", (long)psEvent->hour, (long)psEvent->minute);
+                cJSON_AddStringToObject(psEventJson, "time", acTime);
+            }
+        }
     }
 
-    cJSON *deviceTop = cJSON_CreateObject();
-    cJSON_AddItemToObject(deviceTop,"device", device);
+    pacOut = cJSON_PrintUnformatted(psTop);
+    cJSON_Delete(psTop);
+    return pacOut;
+}
 
-    // Print the updated JSON object to a string
-    // json_data = cJSON_Print(device);
-    string = cJSON_PrintUnformatted(deviceTop);
+void data_logDeviceData(const char *pacTag, const deviceData_t *psData)
+{
+    const char *pacLogTag = (pacTag != NULL) ? pacTag : TAG;
 
-    // Free cJSON objects and the JSON string
-    cJSON_Delete(deviceTop);
-    // free(updatedJsonString);
+    if (psData == NULL)
+    {
+        return;
+    }
 
-    return string;
+    ESP_LOGI(pacLogTag, "--- deviceData_t ---");
+    ESP_LOGI(pacLogTag, "  battery=%ldmV  temperature=%.1fC",
+             (long)psData->batteryLevel,
+             (float)psData->temperature / 10.0f);
+
+    for (int i = 0; i < CHANNELCOUNT; i++)
+    {
+        const channelData_t *psC = &psData->channels[i];
+        char acMac[18] = {0};
+        prv_format_mac_string(psC->moisture.macTable, acMac, sizeof(acMac));
+
+        ESP_LOGI(pacLogTag, "  CH%d: en=%d  wtype=%s(%ld)  freq=%d  moisture(min=%ld max=%ld maxAmount=%ld sens=%d)",
+                 i + 1,
+                 (int)psC->enabled,
+                prv_watering_type_to_text(psC->wateringType),
+                (long)psC->wateringType,
+                 (int)psC->frequency,
+                 (long)psC->moisture.minMoisture,
+                 (long)psC->moisture.maxMoisture,
+                 (long)psC->moisture.maxAmount,
+                 (int)psC->moisture.senseEnabled);
+        ESP_LOGI(pacLogTag, "       hum-mac=%s", acMac);
+
+        for (int j = 0; j < EVENTCOUNT; j++)
+        {
+            const eventData_t *psE = &psC->events[j];
+
+            if (psE->amount == 0 && psE->hour == 0 && psE->minute == 0)
+            {
+                continue;
+            }
+
+            ESP_LOGI(pacLogTag,
+                     "    EVT%d: %02ld:%02ld  %ldml",
+                     j + 1,
+                     (long)psE->hour,
+                     (long)psE->minute,
+                     (long)psE->amount);
+        }
+    }
+}
+
+void data_logWateringData(const char *pacTag, const wateringData_t *psData)
+{
+    const char *pacLogTag = (pacTag != NULL) ? pacTag : TAG;
+
+    if (psData == NULL)
+    {
+        return;
+    }
+
+    ESP_LOGI(pacLogTag,
+             "--- wateringData_t --- next=%lld last=%lld",
+             (long long)psData->wateringNextUnix,
+             (long long)psData->wateringLastUnix);
+
+    for (int i = 0; i < CHANNELCOUNT; i++)
+    {
+        for (int j = 0; j < EVENTCOUNT; j++)
+        {
+            const wateringTime_t *psEvt = &psData->wateringChannel[i].wateringEvent[j];
+
+            if (!psEvt->wateringEnable &&
+                psEvt->wateringAmount == 0u &&
+                psEvt->wateringNextUnix == 0 &&
+                psEvt->wateringLastUnix == 0)
+            {
+                continue;
+            }
+
+            ESP_LOGI(pacLogTag,
+                     "  CH%d EVT%d: en=%d amount=%lu amountLast=%lu freq=%lld last=%lld next=%lld",
+                     i + 1,
+                     j + 1,
+                     (int)psEvt->wateringEnable,
+                     (unsigned long)psEvt->wateringAmount,
+                     (unsigned long)psEvt->wateringAmountLast,
+                     (long long)psEvt->wateringFreqUnix,
+                     (long long)psEvt->wateringLastUnix,
+                     (long long)psEvt->wateringNextUnix);
+        }
+    }
 }
 
 const char* pacData_send_receive(char* pGetData, deviceData_t* peDevice_data)
@@ -320,7 +536,7 @@ const char* pacData_send_receive(char* pGetData, deviceData_t* peDevice_data)
                             {
                                 eDataState = DATAFLOW_END;
                                 ESP_LOGI(TAG, "FINAL DATA: %s", caDeviceData);
-                                data_convert_read(peDevice_data,caDeviceData);
+                                deviceDataJson_parse(peDevice_data, caDeviceData, false);
                             }
                             else{
                                eDataState = DATAFLOW_RECEIVE;  
@@ -347,7 +563,7 @@ const char* pacData_send_receive(char* pGetData, deviceData_t* peDevice_data)
                             {
                                 eDataState = DATAFLOW_END;
                                 ESP_LOGI(TAG, "FINAL DATA1: %s", caDeviceData);
-                                data_convert_read(peDevice_data,caDeviceData);
+                                deviceDataJson_parse(peDevice_data, caDeviceData, false);
                             }
                     }       
                     else
@@ -391,9 +607,9 @@ const char* pacData_send_receive(char* pGetData, deviceData_t* peDevice_data)
                     if (*(pGetData + 1)=='1' && *(pGetData + 2)=='1')       //data only one message long
                     {
                         ESP_LOGI(TAG, "start data: %s", pGetData);
-                        ESP_LOGI(TAG, "peDevice_data: %d", (int)(peDevice_data->battery));
+                        ESP_LOGI(TAG, "peDevice_data: %d", (int)(peDevice_data->batteryLevel));
                         //generate json data from struct
-                        strcpy(caDeviceData, data_convert_write(*peDevice_data));
+                        strcpy(caDeviceData, deviceDataJson_serialize(peDevice_data));
                         //device data
                         if (!strcmp(pGetData + 3,"device"))
                         {
@@ -485,7 +701,7 @@ const char* pacData_send_receive(char* pGetData, deviceData_t* peDevice_data)
             {
                 size_t eMessageSize = strlen(caDeviceData + (500 * (cDataCount - '1')));
                 char pacHelper[501];
-                char* pacStartPos = &caDeviceData;
+                char *pacStartPos = caDeviceData;
                 strncpy(pacHelper, (pacStartPos + (500 * (cDataCount - '1'))),500);
                 pacHelper[500]=0;
                 ESP_LOGI("JSON", "Parse data: %s", pacHelper);

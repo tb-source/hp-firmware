@@ -13,13 +13,14 @@ static const uint32_t s_cui32LogicVoltageFact = (uint32_t)((100.0+33.0)/33.0 * 4
 static const uint32_t s_cui32BattVoltageFact = (uint32_t)((33.0+10.0)/10.0 * 4096);          					//voltage divider (Rpu(33kR)+Rpd(10kR))/Rpd(10kR)) (16Q12)
 static const uint32_t s_cui32SolarVoltageFact = (uint32_t)((200.0+33.0)/33.0 * 4096);          					//voltage divider (Rpu(200kR)+Rpd(33kR))/Rpd(33kR)) (16Q12)
 
+static const uint16_t s_caui16BattVoltageTableMv[] = {4162, 4003, 3928, 3838, 3786, 3697, 3626, 3576, 3521, 3493, 3447, 3409, 3012};
+static const uint16_t s_caui16SocTable[] = {100, 90, 80, 70, 60, 50, 40, 30, 20, 15, 10, 5, 0};
 
 static uint32_t s_ui32SupplyVoltage = 0;																		//logic supply voltage 14Q0 [mV]
 static uint32_t s_ui32BattVoltage = 0;																			//battery supply voltage 14Q0 [mV]
 
 const float g_cafNTCTempValues[] = {0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60};
 const float g_cafNTCFactValues[] = {0.0264, 0.0346, 0.0449, 0.0575, 0.0727, 0.0909, 0.1123, 0.1371, 0.1652, 0.1968, 0.2315, 0.2691, 0.3090};
-
 
 static uint32_t s_ui32LevelMin = 0;
 static uint32_t s_ui32LevelMax = 0;
@@ -1009,6 +1010,14 @@ esp_err_pump_t pump_runTime(uint32_t ui32Time, motor_direction_t eDirection, uin
 	return err;
 }
 
+//run pump for defined time $ui32Amount: amount in ml, $eDirection: direction of motor, $ui32PumpNb: pump number 1..x,  $return: esp_err_t -> running motor sucessful
+esp_err_pump_t pump_runAmount(uint32_t ui32Amount, motor_direction_t eDirection, int32_t ui32PumpNb)
+{
+	esp_err_pump_t err = ERR_PUMP_OK;
+	const uint32_t ui32PumpTimeFact = (uint32_t)(0.4*1000);      //[ms/ml]
+	return pump_runTime(ui32Amount * ui32PumpTimeFact, eDirection, ui32PumpNb);
+
+}
 
 //initialise adc function
 static pcnt_unit_handle_t s_pcnt_unit = NULL;				//pulsecount unit handle
@@ -1225,6 +1234,44 @@ uint32_t ui32BattVolt_read(void)
 	s_ui32BattVoltage =  ((ui32AdcTouch_readAdcMux(ADC_MUX_VOLT_BATT, 4) * s_cui32BattVoltageFact) >> 12);
 	ESP_LOGI("ADC","ui32BattVolt_read: %d", (int)s_ui32BattVoltage);
 	return s_ui32BattVoltage;
+}
+
+uint32_t ui32BattLevel_read(void)
+{
+	const uint32_t ui32BattVoltageMv = ui32BattVolt_read();
+	const size_t uiTableLen = sizeof(s_caui16BattVoltageTableMv) / sizeof(s_caui16BattVoltageTableMv[0]);
+
+	if (uiTableLen == 0u)
+	{
+		return 0u;
+	}
+
+	if (ui32BattVoltageMv >= s_caui16BattVoltageTableMv[0])
+	{
+		return (uint32_t)s_caui16SocTable[0];
+	}
+
+	if (ui32BattVoltageMv <= s_caui16BattVoltageTableMv[uiTableLen - 1u])
+	{
+		return (uint32_t)s_caui16SocTable[uiTableLen - 1u];
+	}
+
+	for (size_t i = 0u; i < (uiTableLen - 1u); i++)
+	{
+		const uint32_t ui32VHigh = s_caui16BattVoltageTableMv[i];
+		const uint32_t ui32VLow = s_caui16BattVoltageTableMv[i + 1u];
+
+		if (ui32BattVoltageMv <= ui32VHigh && ui32BattVoltageMv >= ui32VLow)
+		{
+			const uint32_t ui32SocHigh = s_caui16SocTable[i];
+			const uint32_t ui32SocLow = s_caui16SocTable[i + 1u];
+			const uint32_t ui32Den = ui32VHigh - ui32VLow;
+			const uint32_t ui32Num = (ui32BattVoltageMv - ui32VLow) * (ui32SocHigh - ui32SocLow);
+			return ui32SocLow + ((ui32Num + (ui32Den / 2u)) / ui32Den);
+		}
+	}
+
+	return 0u;
 }
 
 //read solar voltage $output: solar voltage [mV]

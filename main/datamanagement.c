@@ -99,7 +99,7 @@ esp_err_t data_getDeviceData(char *pacBuf, size_t uiBufSize)
 {
     time_t   tTime      = time(NULL);
     float    fTemp      = fTemp_read();
-    float    fBatt      = (float)ui32BattVolt_read();
+    int32_t    i32Batt      = (int32_t)ui32BattLevel_read();
     int32_t i32WatLev;
     erLevel_readPerc(&i32WatLev);
 
@@ -107,12 +107,12 @@ esp_err_t data_getDeviceData(char *pacBuf, size_t uiBufSize)
         "{"
           "\"TIME\":%lld,"
           "\"TEMP\":%.1f,"
-          "\"BATT\":%.2f,"
+          "\"BATT\":%ld,"
           "\"WATLEV\":%lu"
         "}",
         (long long)tTime,
         fTemp,
-        fBatt / 1000.0f,
+        i32Batt,
         (unsigned long)i32WatLev);
 
     if (i32Len < 0 || (size_t)i32Len >= uiBufSize)
@@ -151,9 +151,9 @@ static const prv_col_def_t sc_asColDefs[] = {
     { "time",                 NULL,      COL_TYPE_TIME   },
     { "message",              "EVENT",   COL_TYPE_CHAR   },
     { "logicVoltage",         NULL,      COL_TYPE_SKIP   },
-    { "battVoltage",          "BATT",    COL_TYPE_MV     },
-    { "solVoltage",           "SOL",     COL_TYPE_MV     },
-    { "temperature",          "TEMP",    COL_TYPE_FLOAT1 },
+    { "battLevel",            "battLev", COL_TYPE_INT     },
+    { "solVoltage",           "solVolt", COL_TYPE_MV     },
+    { "temperature",          "temp",    COL_TYPE_FLOAT1 },
     { "humidity 0",           "HUM1",    COL_TYPE_INT    },
     { "humidity 1",           "HUM2",    COL_TYPE_INT    },
     { "humidity 2",           "HUM3",    COL_TYPE_INT    },
@@ -161,7 +161,7 @@ static const prv_col_def_t sc_asColDefs[] = {
     { "waterEmpty",           "ETY",     COL_TYPE_INT    },
     { "selTouch",             "SEL",     COL_TYPE_INT    },
     { "pumpTouch",            "PUMP",    COL_TYPE_INT    },
-    { "chargeStatus",         "CHRG",    COL_TYPE_BOOL   },
+    { "chargeStatus",         "chrg",    COL_TYPE_BOOL   },
     { "mifloraTemperature1",  "MITEMP1", COL_TYPE_FLOAT1 },
     { "mifloraIlluminance1",  "MIILL1",  COL_TYPE_INT    },
     { "mifloraMoisture1",     "MIMOIS1", COL_TYPE_INT    },
@@ -251,7 +251,7 @@ static size_t prv_csvLineToJson(const char *pacLine, const int8_t *pai8Map,
 
     size_t uiPos     = 0u;
     bool   bOverflow = false;
-    bool   bFirst    = true;
+    bool   bFirst    = false;
 
 #define APND(_fmt, ...) \
     do { \
@@ -262,12 +262,25 @@ static size_t prv_csvLineToJson(const char *pacLine, const int8_t *pai8Map,
         } \
     } while (0)
 
-    APND("\"%lld\":{", llTime);
+    APND("\"%lld\":{\"type\":\"data\"", llTime);
 
     for (size_t uiDef = 0u; uiDef < PRV_COL_DEF_COUNT; uiDef++)
     {
         const prv_col_def_t *psDef = &sc_asColDefs[uiDef];
-        if (psDef->e_type == COL_TYPE_TIME || psDef->e_type == COL_TYPE_SKIP) { continue; }
+        if (psDef->e_type == COL_TYPE_TIME || psDef->e_type == COL_TYPE_SKIP ||
+            strcmp(psDef->pac_csv, "message") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraTemperature1") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraTemperature2") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraTemperature3") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraIlluminance1") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraIlluminance2") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraIlluminance3") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraMoisture1") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraMoisture2") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraMoisture3") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraConductivity1") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraConductivity2") == 0 ||
+            strcmp(psDef->pac_csv, "mifloraConductivity3") == 0) { continue; }
         if (pai8Map[uiDef] < 0 || (uint8_t)pai8Map[uiDef] >= ui8Cnt)         { continue; }
 
         const char *pacVal = pacFields[(uint8_t)pai8Map[uiDef]];
@@ -277,7 +290,6 @@ static size_t prv_csvLineToJson(const char *pacLine, const int8_t *pai8Map,
         switch (psDef->e_type)
         {
             case COL_TYPE_CHAR:
-                APND("\"%s\":\"%c\"", psDef->pac_json, pacVal[0]);
                 break;
             case COL_TYPE_MV:
                 APND("\"%s\":%.3f", psDef->pac_json, (float)atoi(pacVal) / 1000.0f);
@@ -294,6 +306,97 @@ static size_t prv_csvLineToJson(const char *pacLine, const int8_t *pai8Map,
             default:
                 break;
         }
+    }
+
+    {
+        int8_t aiCondIdx[CHANNELCOUNT];
+        int8_t aiIllIdx[CHANNELCOUNT];
+        int8_t aiMoisIdx[CHANNELCOUNT];
+        int8_t aiTempIdx[CHANNELCOUNT];
+
+        for (uint32_t uiI = 0u; uiI < CHANNELCOUNT; uiI++)
+        {
+            aiCondIdx[uiI] = -1;
+            aiIllIdx[uiI] = -1;
+            aiMoisIdx[uiI] = -1;
+            aiTempIdx[uiI] = -1;
+        }
+
+        for (size_t uiDef = 0u; uiDef < PRV_COL_DEF_COUNT; uiDef++)
+        {
+            if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraConductivity1") == 0) { aiCondIdx[0] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraConductivity2") == 0) { aiCondIdx[1] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraConductivity3") == 0) { aiCondIdx[2] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraIlluminance1") == 0) { aiIllIdx[0] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraIlluminance2") == 0) { aiIllIdx[1] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraIlluminance3") == 0) { aiIllIdx[2] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraMoisture1") == 0) { aiMoisIdx[0] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraMoisture2") == 0) { aiMoisIdx[1] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraMoisture3") == 0) { aiMoisIdx[2] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraTemperature1") == 0) { aiTempIdx[0] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraTemperature2") == 0) { aiTempIdx[1] = pai8Map[uiDef]; }
+            else if (strcmp(sc_asColDefs[uiDef].pac_csv, "mifloraTemperature3") == 0) { aiTempIdx[2] = pai8Map[uiDef]; }
+        }
+
+        APND(",\"miCond\":[");
+        bool bArrFirst = true;
+        for (uint32_t i = 0u; i < CHANNELCOUNT; i++)
+        {
+            int i32Val = 0;
+            if (aiCondIdx[i] >= 0 && (uint8_t)aiCondIdx[i] < ui8Cnt)
+            {
+                i32Val = atoi(pacFields[(uint8_t)aiCondIdx[i]]);
+            }
+            if (!bArrFirst) { APND(","); }
+            APND("%d", i32Val);
+            bArrFirst = false;
+        }
+        APND("]");
+
+        APND(",\"miIll\":[");
+        bArrFirst = true;
+        for (uint32_t i = 0u; i < CHANNELCOUNT; i++)
+        {
+            int i32Val = 0;
+            if (aiIllIdx[i] >= 0 && (uint8_t)aiIllIdx[i] < ui8Cnt)
+            {
+                i32Val = atoi(pacFields[(uint8_t)aiIllIdx[i]]);
+            }
+            if (!bArrFirst) { APND(","); }
+            APND("%d", i32Val);
+            bArrFirst = false;
+        }
+        APND("]");
+
+        APND(",\"miMois\":[");
+        bArrFirst = true;
+        for (uint32_t i = 0u; i < CHANNELCOUNT; i++)
+        {
+            int i32Val = 0;
+            if (aiMoisIdx[i] >= 0 && (uint8_t)aiMoisIdx[i] < ui8Cnt)
+            {
+                i32Val = atoi(pacFields[(uint8_t)aiMoisIdx[i]]);
+            }
+            if (!bArrFirst) { APND(","); }
+            APND("%d", i32Val);
+            bArrFirst = false;
+        }
+        APND("]");
+
+        APND(",\"miTemp\":[");
+        bArrFirst = true;
+        for (uint32_t i = 0u; i < CHANNELCOUNT; i++)
+        {
+            float fVal = 0.0f;
+            if (aiTempIdx[i] >= 0 && (uint8_t)aiTempIdx[i] < ui8Cnt)
+            {
+                fVal = (float)atof(pacFields[(uint8_t)aiTempIdx[i]]);
+            }
+            if (!bArrFirst) { APND(","); }
+            APND("%.1f", fVal);
+            bArrFirst = false;
+        }
+        APND("]");
     }
 
     APND("}");
@@ -329,14 +432,15 @@ static size_t prv_csvWateringLineToJson(const char *pacLine, char *pacBuf, size_
     int       i32Amount   = atoi(pacFields[3]);
     int       i32Humidity = atoi(pacFields[4]);
 
-    int i32Len = snprintf(pacBuf, uiBufSize,
-        "\"%lld\":{"
-          "\"CHANNEL\":%d,"
-          "\"EVENT\":%d,"
-          "\"AMOUNT\":%d,"
-          "\"HUMIDITY\":%d"
-        "}",
-        llTime, i32Channel, i32Event, i32Amount, i32Humidity);
+        int i32Len = snprintf(pacBuf, uiBufSize,
+                "\"%lld\":{"
+                    "\"type\":\"watering\","
+                    "\"watCh\":%d,"
+                    "\"watEvt\":%d,"
+                    "\"watAmt\":%d,"
+                    "\"watMois\":%d"
+                "}",
+                llTime, i32Channel, i32Event, i32Amount, i32Humidity);
 
     if (i32Len < 0 || (size_t)i32Len >= uiBufSize) { return 0u; }
     return (size_t)i32Len;
@@ -366,12 +470,13 @@ static size_t prv_csvErrorLineToJson(const char *pacLine, char *pacBuf, size_t u
 
     long long llTime = atoll(pacTime);
 
-    int i32Len = snprintf(pacBuf, uiBufSize,
-        "\"%lld\":{"
-          "\"TAG\":\"%s\","
-          "\"MESSAGE\":\"%s\""
-        "}",
-        llTime, pacTag, pacMsg);
+        int i32Len = snprintf(pacBuf, uiBufSize,
+                "\"%lld\":{"
+                    "\"type\":\"error\","
+                    "\"errTag\":\"%s\","
+                    "\"errMsg\":\"%s\""
+                "}",
+                llTime, pacTag, pacMsg);
 
     if (i32Len < 0 || (size_t)i32Len >= uiBufSize) { return 0u; }
     return (size_t)i32Len;
@@ -679,242 +784,3 @@ esp_err_t data_getErrorLogData(char *pacBuf, size_t uiBufSize,
     return ESP_OK;
 }
 
-/* =========================================================================
- * data_setChannelData
- * ========================================================================= */
-
-esp_err_t data_setChannelData(const char *pacJson, channelData_t *psChannels)
-{
-    if (pacJson == NULL || psChannels == NULL)
-    {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    cJSON *psRoot = cJSON_Parse(pacJson);
-    if (psRoot == NULL)
-    {
-        ESP_LOGE(TAG, "data_setChannelData: JSON-Parse fehlgeschlagen");
-        return ESP_FAIL;
-    }
-
-    memset(psChannels, 0, sizeof(channelData_t) * CHANNELCOUNT);
-
-    for (uint8_t ui8I = 0u; ui8I < CHANNELCOUNT; ui8I++)
-    {
-        char acKey[6];
-        snprintf(acKey, sizeof(acKey), "CH%d", (int)(ui8I + 1u));
-
-        cJSON *psCh = cJSON_GetObjectItem(psRoot, acKey);
-        if (psCh == NULL) { continue; }
-
-        channelData_t *psC = &psChannels[ui8I];
-
-        cJSON *psName = cJSON_GetObjectItem(psCh, "NAME");
-        if (cJSON_IsString(psName))
-        {
-            strncpy(psC->name, psName->valuestring, sizeof(psC->name) - 1u);
-        }
-
-        cJSON *psEn = cJSON_GetObjectItem(psCh, "EN");
-        psC->enable = cJSON_IsTrue(psEn);
-
-        cJSON *psFreq = cJSON_GetObjectItem(psCh, "FREQ");
-        if (cJSON_IsNumber(psFreq))
-        {
-            psC->frequency = (int32_t)psFreq->valueint;
-        }
-
-        cJSON *psHum = cJSON_GetObjectItem(psCh, "HUM");
-        if (cJSON_IsObject(psHum))
-        {
-            cJSON *psMax  = cJSON_GetObjectItem(psHum, "MAX");
-            cJSON *psMin  = cJSON_GetObjectItem(psHum, "MIN");
-            cJSON *psSens = cJSON_GetObjectItem(psHum, "SENS");
-            cJSON *psMac  = cJSON_GetObjectItem(psHum, "MAC");
-
-            if (cJSON_IsNumber(psMax)) { psC->moisture.maxMoisture = (int32_t)psMax->valueint; }
-            if (cJSON_IsNumber(psMin)) { psC->moisture.minMoisture = (int32_t)psMin->valueint; }
-            psC->moisture.senseEnable = cJSON_IsTrue(psSens);
-            (void)prv_parseMacJson(psMac, psC->moisture.macTable);
-        }
-
-        cJSON *psEvents = cJSON_GetObjectItem(psCh, "EVENTS");
-        if (cJSON_IsObject(psEvents))
-        {
-            int32_t i32EvIdx = 0;
-            cJSON  *psEvt    = NULL;
-            cJSON_ArrayForEach(psEvt, psEvents)
-            {
-                if (i32EvIdx >= (int32_t)EVENTCOUNT) { break; }
-
-                cJSON *psAmount = cJSON_GetObjectItem(psEvt, "AMOUNT");
-                cJSON *psTime   = cJSON_GetObjectItem(psEvt, "TIME");
-
-                if (cJSON_IsNumber(psAmount))
-                {
-                    psC->events[i32EvIdx].amount = (int32_t)psAmount->valueint;
-                }
-
-                if (cJSON_IsString(psTime))
-                {
-                    int i32H = 0, i32M = 0;
-                    sscanf(psTime->valuestring, "%d:%d", &i32H, &i32M);
-                    psC->events[i32EvIdx].hour   = (int32_t)i32H;
-                    psC->events[i32EvIdx].minute = (int32_t)i32M;
-                }
-                else if (cJSON_IsNumber(psTime))
-                {
-                    psC->events[i32EvIdx].hour   = (int32_t)psTime->valueint;
-                    psC->events[i32EvIdx].minute = 0;
-                }
-
-                i32EvIdx++;
-            }
-        }
-
-        ESP_LOGD(TAG, "CH%d: name=%s en=%d freq=%d hum[min=%ld max=%ld sens=%d]", (int)(ui8I + 1u),
-             psC->name, (int)psC->enable, (int)psC->frequency,
-             (long)psC->moisture.minMoisture,
-             (long)psC->moisture.maxMoisture,
-             (int)psC->moisture.senseEnable);
-    }
-
-    cJSON_Delete(psRoot);
-    return ESP_OK;
-}
-
-/* =========================================================================
- * data_logDeviceData
- * ========================================================================= */
-
-void data_logDeviceData(const deviceData_t *psData)
-{
-    if (psData == NULL) { return; }
-
-    ESP_LOGI(TAG, "--- deviceData_t ---");
-    ESP_LOGI(TAG, "  id=%ld  name=%s  status=%s",
-             (long)psData->id, psData->name, psData->status);
-    ESP_LOGI(TAG, "  battery=%ldmV  temperature=%.1f°C  wateringtype=%ld",
-             (long)psData->battery,
-             (float)psData->temperature / 10.0f,
-             (long)psData->wateringtype);
-
-    for (int i = 0; i < CHANNELCOUNT; i++)
-    {
-        const channelData_t *psC = &psData->channels[i];
-        char acMac[18];
-        prv_formatMacString(psC->moisture.macTable, acMac, sizeof(acMac));
-        ESP_LOGI(TAG, "  CH%d: name=%s  en=%d  freq=%d  moisture(min=%ld max=%ld sens=%d)",
-                 i + 1, psC->name, (int)psC->enable, (int)psC->frequency,
-                 (long)psC->moisture.minMoisture, (long)psC->moisture.maxMoisture,
-                 (int)psC->moisture.senseEnable);
-        ESP_LOGI(TAG, "       hum-mac=%s", acMac);
-
-        for (int j = 0; j < EVENTCOUNT; j++)
-        {
-            const eventData_t *psE = &psC->events[j];
-            if (psE->amount == 0 && psE->hour == 0 && psE->minute == 0) { continue; }
-            ESP_LOGI(TAG, "    EVT%d: %02ld:%02ld  %ldml",
-                     j + 1, (long)psE->hour, (long)psE->minute, (long)psE->amount);
-        }
-    }
-}
-
-/* =========================================================================
- * data_getChannelData
- * ========================================================================= */
-
-esp_err_t data_getChannelData(const channelData_t *psChannels, char *pacBuf, size_t uiBufSize)
-{
-    if (psChannels == NULL || pacBuf == NULL || uiBufSize == 0u)
-    {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    cJSON *psRoot = cJSON_CreateObject();
-    if (psRoot == NULL) { return ESP_FAIL; }
-
-    for (int i = 0; i < CHANNELCOUNT; i++)
-    {
-        const channelData_t *psC = &psChannels[i];
-
-        cJSON *psCh = cJSON_CreateObject();
-        if (psCh == NULL) { cJSON_Delete(psRoot); return ESP_FAIL; }
-
-        cJSON_AddStringToObject(psCh, "NAME",  psC->name);
-        cJSON_AddBoolToObject  (psCh, "EN",    psC->enable);
-        cJSON_AddNumberToObject(psCh, "FREQ",  (double)psC->frequency);
-
-        /* HUM */
-        cJSON *psHum = cJSON_CreateObject();
-        if (psHum != NULL)
-        {
-            char acMac[18];
-            prv_formatMacString(psC->moisture.macTable, acMac, sizeof(acMac));
-
-            cJSON_AddNumberToObject(psHum, "MAX",  (double)psC->moisture.maxMoisture);
-            cJSON_AddNumberToObject(psHum, "MIN",  (double)psC->moisture.minMoisture);
-            cJSON_AddBoolToObject  (psHum, "SENS", psC->moisture.senseEnable);
-            cJSON_AddStringToObject(psHum, "MAC",  acMac);
-            cJSON_AddItemToObject  (psCh,  "HUM",  psHum);
-        }
-
-        /* EVENTS – nur Einträge mit gesetzten Werten */
-        cJSON *psEvents  = cJSON_CreateObject();
-        bool   bHasEvts  = false;
-        if (psEvents != NULL)
-        {
-            for (int j = 0; j < EVENTCOUNT; j++)
-            {
-                const eventData_t *psE = &psC->events[j];
-                if (psE->amount == 0 && psE->hour == 0 && psE->minute == 0) { continue; }
-
-                char acEvtKey[8];
-                snprintf(acEvtKey, sizeof(acEvtKey), "EVT%d", j + 1);
-
-                cJSON *psEvt = cJSON_CreateObject();
-                if (psEvt != NULL)
-                {
-                    char acTime[6];
-                    snprintf(acTime, sizeof(acTime), "%02ld:%02ld",
-                             (long)psE->hour, (long)psE->minute);
-
-                    cJSON_AddNumberToObject(psEvt, "AMOUNT", (double)psE->amount);
-                    cJSON_AddStringToObject(psEvt, "TIME",   acTime);
-                    cJSON_AddItemToObject  (psEvents, acEvtKey, psEvt);
-                    bHasEvts = true;
-                }
-            }
-
-            if (bHasEvts) { cJSON_AddItemToObject(psCh, "EVENTS", psEvents); }
-            else          { cJSON_Delete(psEvents); }
-        }
-
-        char acKey[6];
-        snprintf(acKey, sizeof(acKey), "CH%d", i + 1);
-        cJSON_AddItemToObject(psRoot, acKey, psCh);
-    }
-
-    char *pacJson = cJSON_PrintUnformatted(psRoot);
-    cJSON_Delete(psRoot);
-
-    if (pacJson == NULL)
-    {
-        ESP_LOGE(TAG, "data_getChannelData: cJSON_Print fehlgeschlagen");
-        return ESP_FAIL;
-    }
-
-    size_t uiLen = strlen(pacJson);
-    if (uiLen >= uiBufSize)
-    {
-        free(pacJson);
-        ESP_LOGE(TAG, "data_getChannelData: Puffer zu klein (%u bytes needed)", (unsigned)uiLen + 1u);
-        return ESP_ERR_NO_MEM;
-    }
-
-    memcpy(pacBuf, pacJson, uiLen + 1u);
-    free(pacJson);
-
-    ESP_LOGD(TAG, "ChannelData: %s", pacBuf);
-    return ESP_OK;
-}

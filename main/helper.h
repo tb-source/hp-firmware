@@ -28,8 +28,10 @@ typedef enum {
     DATAFLOW_ERROR = '5',
 }data_state_t;
 
-extern esp_err_t data_convert_read(deviceData_t* device_data, char* json_data);
-extern char* data_convert_write(deviceData_t device_data);
+extern esp_err_t deviceDataJson_parse(deviceData_t *psDeviceData, const char *pacJson, bool bSyncTime);
+extern char *deviceDataJson_serialize(const deviceData_t *psDeviceData);
 extern const char* pacData_send_receive(char* pGetData, deviceData_t* peDevice_data);
+extern void data_logDeviceData(const char *pacTag, const deviceData_t *psData);
+extern void data_logWateringData(const char *pacTag, const wateringData_t *psData);
 
 #endif /* MAIN_HELPER_H_ */

@@ -494,6 +494,12 @@ void testFunction(uint8_t* pacData)
 		}
 		break;
 
+        case 'n':
+        {   
+            ESP_LOGI(TAGA, "Battery Level: %d", (int)ui32BattLevel_read());
+        }
+        break;  
+        
 		case 'u':
 		{
 	        ESP_LOGI(TAGA, "DATA: %i", (int)ui32BattVolt_read());

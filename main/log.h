@@ -37,6 +37,6 @@ extern void log_readData(log_type_t eType);
 extern void log_clearData(log_type_t eType);
 extern void log_peripherieData(miflora_data_t paFloraData[]);
 extern void log_wateringData(uint32_t ui32WateringChannel, uint32_t ui32WateringEvent, uint32_t ui32WateringAmount, uint32_t ui32humidity);
-extern void log_errorData(log_error_type_t eErrorType, char* pacErrorMessage);
+extern void log_errorData(log_error_type_t eErrorType, const char *pacErrorFormat, ...);
 
 #endif /* MAIN_LOG_H_ */
